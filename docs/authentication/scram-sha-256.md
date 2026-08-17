@@ -5,6 +5,7 @@ Bongo uses SCRAM-SHA-256 to authenticate a MongoDB user without sending the user
 MongoDB documents SCRAM here:
 
 - [MongoDB SCRAM documentation](https://www.mongodb.com/docs/manual/core/security-scram/)
+- [MongoDB authentication specification](https://github.com/mongodb/specifications/blob/master/source/auth/auth.md)
 - [MongoDB connection-string authentication options](https://www.mongodb.com/docs/manual/reference/connection-string-options/)
 
 The SCRAM-SHA-256 mechanism itself is standardized here:
@@ -102,7 +103,7 @@ n,,n=bongo,r=abc123
 
 The GS2 header is part of SCRAM's protocol framing. It tells the server about channel binding and can optionally carry a SASL authorization identity.
 
-Bongo currently uses the simple `n,,` form.
+Bongo currently uses the simple `n,,` form. MongoDB drivers must not advertise channel binding because MongoDB does not support it.
 
 ## Message Structure
 
@@ -130,9 +131,9 @@ Example:
 abc123
 ```
 
-In production Bongo will generate a random nonce rather than using a hard-coded value.
+In production Bongo will generate a cryptographically secure random nonce rather than using a hard-coded value.
 
-MongoDB's server response must contain a nonce that begins with the client nonce.
+MongoDB's server response must contain the client nonce with additional server-generated nonce data appended.
 
 For example:
 
@@ -142,6 +143,8 @@ abc123
 
 server:
 abc123XYZ
+^^^^^^
+client nonce
 ```
 
 This ties the server's response to the authentication attempt that Bongo started.
@@ -183,11 +186,103 @@ n,,n=a,b=c,r=nonce
 
 Bongo currently rejects:
 
-- empty nonces
-- non-printable nonce characters
-- commas inside a nonce
+- empty client nonces
+- non-printable client nonce characters
+- commas inside a client nonce
 
 The comma cannot appear because SCRAM uses commas to separate attributes.
+
+## Server First Message
+
+After receiving Bongo's client-first message, MongoDB responds with a SCRAM server-first message.
+
+Example:
+
+```text
+r=abc123XYZ,s=c2FsdA==,i=4096
+```
+
+Bongo parses it with:
+
+```zig
+pub const ServerFirst = struct {
+    nonce: []const u8,
+    salt: []const u8,
+    iterations: u32,
+};
+
+pub fn parseServerFirst(
+    message: []const u8,
+    client_nonce: []const u8,
+) Error!ServerFirst
+```
+
+Example:
+
+```zig
+const result = try parseServerFirst(
+    "r=abc123XYZ,s=c2FsdA==,i=4096",
+    "abc123",
+);
+```
+
+Produces conceptually:
+
+```text
+result.nonce      = "abc123XYZ"
+result.salt       = "c2FsdA=="
+result.iterations = 4096
+```
+
+### Server First Fields
+
+```text
+r=abc123XYZ,s=c2FsdA==,i=4096
+│           │          │
+│           │          └── iteration count
+│           │
+│           └───────────── Base64-encoded salt
+│
+└───────────────────────── combined client + server nonce
+```
+
+`r=` is the combined nonce. Bongo verifies that it starts with the client nonce and that the server actually appended additional data.
+
+`s=` is the salt. At this stage Bongo stores the Base64 text exactly as received. Decoding the salt into bytes belongs to the next cryptographic step.
+
+`i=` is the password-derivation iteration count. MongoDB's authentication specification requires SCRAM-SHA-1 and SCRAM-SHA-256 drivers to reject values below `4096`.
+
+### Server First Validation
+
+Bongo rejects a server-first message when:
+
+- `r`, `s`, or `i` is missing
+- a required field is duplicated
+- the server nonce does not start with Bongo's client nonce
+- the server nonce does not contain any additional server-generated data
+- the iteration count is not a valid `u32`
+- the iteration count is below `4096`
+- the server sends the reserved mandatory-extension field `m=`, which Bongo does not support
+
+Unknown optional SCRAM extension attributes are currently ignored.
+
+### Borrowed Memory
+
+Unlike `clientFirst()`, `parseServerFirst()` does not allocate copies of the nonce or salt.
+
+The returned slices point into the original `message`:
+
+```text
+message
+│
+├── r=abc123XYZ
+│     └───────┘ result.nonce
+│
+└── s=c2FsdA==
+      └──────┘ result.salt
+```
+
+Therefore the `ServerFirst` result is valid only while the original server-first message remains valid.
 
 ## Memory Ownership
 
@@ -206,15 +301,20 @@ defer allocator.free(message);
 
 The temporary escaped username is held in an `ArrayList(u8)` and freed inside `clientFirst()`.
 
+`parseServerFirst()` does not allocate; its nonce and salt slices borrow from the input message.
+
 ## Current Status
 
 ```text
 client-first message        ✓
 username escaping           ✓
-nonce validation            ✓
+client nonce validation     ✓
+server-first parsing        ✓
+server nonce validation     ✓
+iteration validation        ✓
 unit tests                  ✓
 
-server-first parsing        next
+Base64 salt decoding        next
 password proof              not implemented
 client-final                not implemented
 server verification         not implemented
