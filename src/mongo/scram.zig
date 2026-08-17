@@ -56,13 +56,13 @@ fn isValidNonce(nonce: []const u8) bool {
 test "client first message includes username and nonce" {
     const message = try clientFirst(
         std.testing.allocator,
-        "chris",
+        "bongo",
         "abc123",
     );
     defer std.testing.allocator.free(message);
 
     try std.testing.expectEqualStrings(
-        "n,,n=chris,r=abc123",
+        "n,,n=bongo,r=abc123",
         message,
     );
 }
@@ -86,7 +86,7 @@ test "client first message rejects invalid nonce" {
         error.InvalidNonce,
         clientFirst(
             std.testing.allocator,
-            "chris",
+            "bongo",
             "bad,nonce",
         ),
     );
@@ -95,7 +95,7 @@ test "client first message rejects invalid nonce" {
         error.InvalidNonce,
         clientFirst(
             std.testing.allocator,
-            "chris",
+            "bongo",
             "",
         ),
     );
