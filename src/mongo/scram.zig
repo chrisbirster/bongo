@@ -4,6 +4,16 @@ const Allocator = std.mem.Allocator;
 
 pub const Error = Allocator.Error || error{
     InvalidNonce,
+    InvalidServerFirstMessage,
+    InvalidServerNonce,
+    InvalidIterationCount,
+    UnsupportedExtension,
+};
+
+pub const ServerFirst = struct {
+    nonce: []const u8,
+    salt: []const u8,
+    iterations: u32,
 };
 
 /// Build the SCRAM-SHA-256 client-first message.
@@ -37,6 +47,71 @@ pub fn clientFirst(
         "n,,n={s},r={s}",
         .{ escaped_username.items, nonce },
     );
+}
+
+/// Parse the SCRAM server-first message.
+///
+/// The server returns the combined nonce (`r`), Base64-encoded salt (`s`),
+/// and password-derivation iteration count (`i`). The returned slices borrow
+/// from `message` and remain valid only while `message` remains valid.
+pub fn parseServerFirst(
+    message: []const u8,
+    client_nonce: []const u8,
+) Error!ServerFirst {
+    var nonce: ?[]const u8 = null;
+    var salt: ?[]const u8 = null;
+    var iterations: ?u32 = null;
+
+    var fields = std.mem.splitScalar(u8, message, ',');
+    while (fields.next()) |field| {
+        if (field.len < 3 or field[1] != '=') {
+            return error.InvalidServerFirstMessage;
+        }
+
+        const value = field[2..];
+
+        switch (field[0]) {
+            'r' => {
+                if (nonce != null) return error.InvalidServerFirstMessage;
+                nonce = value;
+            },
+            's' => {
+                if (salt != null) return error.InvalidServerFirstMessage;
+                salt = value;
+            },
+            'i' => {
+                if (iterations != null) return error.InvalidServerFirstMessage;
+
+                const parsed = std.fmt.parseInt(u32, value, 10) catch {
+                    return error.InvalidIterationCount;
+                };
+
+                if (parsed < 4096) {
+                    return error.InvalidIterationCount;
+                }
+
+                iterations = parsed;
+            },
+            'm' => return error.UnsupportedExtension,
+            else => {},
+        }
+    }
+
+    const server_nonce = nonce orelse return error.InvalidServerFirstMessage;
+    const server_salt = salt orelse return error.InvalidServerFirstMessage;
+    const iteration_count = iterations orelse return error.InvalidServerFirstMessage;
+
+    if (!std.mem.startsWith(u8, server_nonce, client_nonce) or
+        server_nonce.len <= client_nonce.len)
+    {
+        return error.InvalidServerNonce;
+    }
+
+    return .{
+        .nonce = server_nonce,
+        .salt = server_salt,
+        .iterations = iteration_count,
+    };
 }
 
 fn isValidNonce(nonce: []const u8) bool {
@@ -97,6 +172,55 @@ test "client first message rejects invalid nonce" {
             std.testing.allocator,
             "bongo",
             "",
+        ),
+    );
+}
+
+test "server first message parses nonce salt and iterations" {
+    const result = try parseServerFirst(
+        "r=abc123XYZ,s=c2FsdA==,i=4096",
+        "abc123",
+    );
+
+    try std.testing.expectEqualStrings("abc123XYZ", result.nonce);
+    try std.testing.expectEqualStrings("c2FsdA==", result.salt);
+    try std.testing.expectEqual(@as(u32, 4096), result.iterations);
+}
+
+test "server first message requires server nonce to extend client nonce" {
+    try std.testing.expectError(
+        error.InvalidServerNonce,
+        parseServerFirst(
+            "r=otherXYZ,s=c2FsdA==,i=4096",
+            "abc123",
+        ),
+    );
+
+    try std.testing.expectError(
+        error.InvalidServerNonce,
+        parseServerFirst(
+            "r=abc123,s=c2FsdA==,i=4096",
+            "abc123",
+        ),
+    );
+}
+
+test "server first message rejects iteration count below MongoDB minimum" {
+    try std.testing.expectError(
+        error.InvalidIterationCount,
+        parseServerFirst(
+            "r=abc123XYZ,s=c2FsdA==,i=4095",
+            "abc123",
+        ),
+    );
+}
+
+test "server first message requires nonce salt and iterations" {
+    try std.testing.expectError(
+        error.InvalidServerFirstMessage,
+        parseServerFirst(
+            "r=abc123XYZ,i=4096",
+            "abc123",
         ),
     );
 }
