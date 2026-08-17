@@ -2,6 +2,8 @@
 
 Bongo's engineering style is inspired by [TigerBeetle's TigerStyle](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md), but adapted for a MongoDB driver and for the conventions already established in this repository.
 
+TigerStyle is recommended reading for contributors. In particular, Bongo adopts many of its ideas around safety, bounded work, assertions, explicit control flow, testing the negative space, and designing robust software deliberately rather than reactively. TigerStyle's safety discussion is also influenced by [NASA's Power of Ten rules](https://spinroot.com/gerard/pdf/P10.pdf).
+
 This document applies immediately to new code and to existing code when it is modified.
 
 ## Design Priorities
@@ -15,6 +17,40 @@ Bongo optimizes for these goals, in this order:
 A design should try to improve all three. When they conflict, correctness wins.
 
 Incomplete functionality is acceptable when its boundary is explicit and tested. Knowingly incorrect protocol behavior is not.
+
+## Robust Software
+
+Bongo should remain predictable when the world around it is not.
+
+A robust MongoDB driver assumes that network input may be malformed, truncated, oversized, contradictory, malicious, or simply unexpected. Robustness means those situations produce controlled behavior rather than memory corruption, unbounded work, undefined state, or a crash caused by remote input.
+
+Bongo therefore follows these principles:
+
+- Treat all external input as untrusted until it has been validated.
+- Validate at boundaries before indexing, allocating, converting, hashing, or changing state.
+- Put explicit bounds on lengths, loops, queues, retries, timeouts, and allocations influenced by external input.
+- Reject impossible or contradictory protocol states rather than attempting to guess what was intended.
+- Prefer failing early, close to the point where an invariant is first violated.
+- Keep parsing and state transitions deterministic: the same input should produce the same result.
+- Make partial or unsupported functionality explicit instead of silently approximating protocol behavior.
+- Test malformed, truncated, duplicate, minimum, maximum, and just-outside-the-boundary inputs.
+
+Robustness is not merely "does the happy path work?" It is whether Bongo continues to behave correctly when the happy path stops being happy.
+
+## Security
+
+Security-sensitive code deserves stricter rules, especially authentication, connection strings, TLS, and BSON or wire data controlled by another process.
+
+- Never log passwords, authentication secrets, derived keys, or other credential material.
+- Keep secret material alive for no longer than necessary and clear sensitive temporary buffers when practical.
+- Use Zig's standard cryptographic primitives or well-reviewed protocol-defined implementations. Do not invent cryptographic algorithms.
+- Follow the MongoDB authentication specification and the underlying RFC exactly where cryptographic bytes or message text are defined.
+- Preserve the exact bytes required by a cryptographic transcript; do not normalize or reconstruct them casually.
+- Use constant-time comparison where secret-derived authentication values are compared.
+- Validate sizes and iteration counts before allowing them to influence expensive cryptographic work.
+- Authentication failure must be an expected error path, not an assertion failure.
+
+Security starts with parsing. A cryptographically correct implementation built on unsafe or ambiguous input handling is not secure.
 
 ## Protocol Work Is Spec-First
 
@@ -90,9 +126,28 @@ Use errors for expected runtime failures, including:
 
 Do not crash because a remote server sent bad data.
 
-Where an invariant is important, check both sides of the boundary when practical. Tests should cover the valid space, invalid space, and the exact boundary between them.
+Assertions should act as executable contracts for assumptions made inside Bongo. Good assertion candidates include:
 
-Prefer separate assertions when they express separate invariants.
+- preconditions established by an internal caller.
+- postconditions a helper promises to establish.
+- relationships between indexes, lengths, counts, and fixed protocol constants.
+- state-machine transitions that should be impossible to enter incorrectly after validation.
+- compile-time relationships between constants and fixed-width types.
+
+Where an invariant is important, try to verify it from more than one direction. For example, validate a length before writing a message and validate it again when reading one. This follows TigerStyle's idea of paired assertions and makes invariant violations easier to discover.
+
+Test both the positive and negative space around an invariant. If `4096` is valid and values below it are invalid, test `4096` and `4095`, not only an arbitrary valid value.
+
+Prefer separate assertions when they express separate invariants:
+
+```zig
+std.debug.assert(index < bytes.len);
+std.debug.assert(message_length >= header_length);
+```
+
+rather than hiding distinct assumptions inside one compound assertion.
+
+An assertion is never a substitute for validating remote input. If a MongoDB server can cause the condition, return an error instead.
 
 ## Memory Ownership Must Be Obvious
 
@@ -296,6 +351,8 @@ For each change, ask:
 - Are programmer invariants assertions and runtime failures errors?
 - Are both valid and invalid cases tested?
 - Does the implementation follow the relevant MongoDB specification or RFC?
+- Does security-sensitive code avoid leaking credentials or secrets?
+- Are cryptographic comparisons and expensive operations handled safely?
 - Does the code explain any surprising decision?
 - Did `zig fmt` run?
 - Did `zig build test` pass?
