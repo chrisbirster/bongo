@@ -11,4 +11,5 @@ test {
     _ = @import("bson.zig");
     _ = @import("mongo/op_msg.zig");
     _ = @import("mongo/connection.zig");
+    _ = @import("mongo/scram.zig");
 }
