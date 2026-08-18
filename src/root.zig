@@ -10,6 +10,7 @@ pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
+pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
 pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
 pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -17,10 +18,8 @@ pub const DeleteResult = @import("mongo/crud.zig").DeleteResult;
 
 pub const mongo = struct {
     pub const op_msg = @import("mongo/op_msg.zig");
-    pub const Connection =
-        @import("mongo/connection.zig").Connection;
-    pub const authenticate =
-        @import("mongo/auth.zig").authenticate;
+    pub const Connection = @import("mongo/connection.zig").Connection;
+    pub const authenticate = @import("mongo/auth.zig").authenticate;
     pub const Client = @import("mongo/client.zig").Client;
     pub const Database = @import("mongo/client.zig").Database;
     pub const Collection = @import("mongo/client.zig").Collection;
@@ -30,6 +29,7 @@ pub const mongo = struct {
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
+    pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
     pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
     pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -49,4 +49,5 @@ test {
     _ = @import("mongo/crud.zig");
     _ = @import("mongo/replacement.zig");
     _ = @import("mongo/find_and_modify.zig");
+    _ = @import("mongo/count.zig");
 }
