@@ -69,6 +69,27 @@ pub fn encodeReplace(
     );
 }
 
+pub fn encodeDelete(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+) ![]u8 {
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .findAndModify = collection_name,
+            .query = filter,
+            .remove = true,
+            .@"$db" = database_name,
+        },
+        .{
+            .request_id = request_id,
+        },
+    );
+}
+
 pub fn parseDocumentResponse(
     allocator: Allocator,
     response_bytes: []const u8,
@@ -174,6 +195,27 @@ test "findOneAndReplace rejects modifiers and encodes replacement" {
             .{ .@"$set" = .{ .name = "Mango" } },
             .before,
         ),
+    );
+}
+
+test "findOneAndDelete encodes remove true" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeDelete(
+        allocator,
+        52,
+        "test",
+        "users",
+        .{ ._id = "bongo-fad" },
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    try std.testing.expect(
+        (try bson.Reader.get(body, "remove")).?.boolean,
+    );
+    try std.testing.expect(
+        (try bson.Reader.get(body, "update")) == null,
     );
 }
 
