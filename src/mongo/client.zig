@@ -2,6 +2,7 @@ const std = @import("std");
 const bson = @import("../bson.zig");
 const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
+const count_ops = @import("count.zig");
 const crud = @import("crud.zig");
 const find_and_modify = @import("find_and_modify.zig");
 const op_msg = @import("op_msg.zig");
@@ -13,6 +14,7 @@ const Io = std.Io;
 pub const ReturnDocument = find_and_modify.ReturnDocument;
 pub const FindOneAndUpdateOptions = find_and_modify.UpdateOptions;
 pub const FindOneAndReplaceOptions = find_and_modify.ReplaceOptions;
+pub const CountDocumentsOptions = count_ops.Options;
 
 pub const Error = error{
     EmptyDatabase,
@@ -197,10 +199,7 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
     }
 
     pub fn findOneAndReplace(
@@ -238,10 +237,7 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
     }
 
     pub fn findOneAndDelete(
@@ -275,10 +271,37 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
+    }
+
+    pub fn countDocuments(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        options: CountDocumentsOptions,
+    ) !i64 {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try count_ops.encodeCountDocuments(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+            options,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return count_ops.parseCountResponse(response, request_id);
     }
 
     pub fn insertOne(
@@ -439,12 +462,7 @@ pub const Client = struct {
         collection_name: []const u8,
         filter: anytype,
     ) !crud.DeleteResult {
-        return self.delete(
-            database_name,
-            collection_name,
-            filter,
-            1,
-        );
+        return self.delete(database_name, collection_name, filter, 1);
     }
 
     pub fn deleteMany(
@@ -453,12 +471,7 @@ pub const Client = struct {
         collection_name: []const u8,
         filter: anytype,
     ) !crud.DeleteResult {
-        return self.delete(
-            database_name,
-            collection_name,
-            filter,
-            0,
-        );
+        return self.delete(database_name, collection_name, filter, 0);
     }
 
     fn delete(
@@ -635,6 +648,19 @@ pub const Collection = struct {
             self.database_name,
             self.name,
             filter,
+        );
+    }
+
+    pub fn countDocuments(
+        self: Collection,
+        filter: anytype,
+        options: CountDocumentsOptions,
+    ) !i64 {
+        return self.client.countDocuments(
+            self.database_name,
+            self.name,
+            filter,
+            options,
         );
     }
 

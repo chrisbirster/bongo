@@ -16,4 +16,5 @@ test {
     _ = @import("integration/15_find_one_and_update.zig");
     _ = @import("integration/16_find_one_and_replace.zig");
     _ = @import("integration/17_find_one_and_delete.zig");
+    _ = @import("integration/18_count_documents.zig");
 }
