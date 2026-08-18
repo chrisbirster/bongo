@@ -21,6 +21,14 @@ pub const DistinctResult = distinct_ops.Result;
 pub const BulkWriteOptions = bulk_ops.Options;
 pub const BulkWriteResult = bulk_ops.Result;
 
+pub const UpdateOptions = struct {
+    upsert: bool = false,
+};
+
+pub const ReplaceOneOptions = struct {
+    upsert: bool = false,
+};
+
 pub const Error = error{
     EmptyDatabase,
     EmptyCollection,
@@ -431,14 +439,32 @@ pub const Client = struct {
         database_name: []const u8,
         collection_name: []const u8,
         filter: anytype,
-        update: anytype,
+        update_document: anytype,
+    ) !crud.UpdateResult {
+        return self.updateOneWithOptions(
+            database_name,
+            collection_name,
+            filter,
+            update_document,
+            .{},
+        );
+    }
+
+    pub fn updateOneWithOptions(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update_document: anytype,
+        options: UpdateOptions,
     ) !crud.UpdateResult {
         return self.runUpdate(
             database_name,
             collection_name,
             filter,
-            update,
+            update_document,
             false,
+            options.upsert,
         );
     }
 
@@ -447,14 +473,32 @@ pub const Client = struct {
         database_name: []const u8,
         collection_name: []const u8,
         filter: anytype,
-        update: anytype,
+        update_document: anytype,
+    ) !crud.UpdateResult {
+        return self.updateManyWithOptions(
+            database_name,
+            collection_name,
+            filter,
+            update_document,
+            .{},
+        );
+    }
+
+    pub fn updateManyWithOptions(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update_document: anytype,
+        options: UpdateOptions,
     ) !crud.UpdateResult {
         return self.runUpdate(
             database_name,
             collection_name,
             filter,
-            update,
+            update_document,
             true,
+            options.upsert,
         );
     }
 
@@ -465,17 +509,35 @@ pub const Client = struct {
         filter: anytype,
         replacement: anytype,
     ) !crud.UpdateResult {
+        return self.replaceOneWithOptions(
+            database_name,
+            collection_name,
+            filter,
+            replacement,
+            .{},
+        );
+    }
+
+    pub fn replaceOneWithOptions(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        replacement: anytype,
+        options: ReplaceOneOptions,
+    ) !crud.UpdateResult {
         if (database_name.len == 0) return error.EmptyDatabase;
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try replacement_ops.encodeReplaceOne(
+        const request = try replacement_ops.encodeReplaceOneWithOptions(
             self.allocator,
             request_id,
             database_name,
             collection_name,
             filter,
             replacement,
+            options.upsert,
         );
         defer self.allocator.free(request);
 
@@ -485,7 +547,11 @@ pub const Client = struct {
         );
         defer self.allocator.free(response);
 
-        return crud.parseUpdateResponse(response, request_id);
+        return crud.parseUpdateResponse(
+            self.allocator,
+            response,
+            request_id,
+        );
     }
 
     fn runUpdate(
@@ -495,6 +561,7 @@ pub const Client = struct {
         filter: anytype,
         update_document: anytype,
         multi: bool,
+        upsert: bool,
     ) !crud.UpdateResult {
         if (database_name.len == 0) return error.EmptyDatabase;
         if (collection_name.len == 0) return error.EmptyCollection;
@@ -508,6 +575,7 @@ pub const Client = struct {
             filter,
             update_document,
             multi,
+            upsert,
         );
         defer self.allocator.free(request);
 
@@ -517,7 +585,11 @@ pub const Client = struct {
         );
         defer self.allocator.free(response);
 
-        return crud.parseUpdateResponse(response, request_id);
+        return crud.parseUpdateResponse(
+            self.allocator,
+            response,
+            request_id,
+        );
     }
 
     pub fn deleteOne(
@@ -781,26 +853,56 @@ pub const Collection = struct {
     pub fn updateOne(
         self: Collection,
         filter: anytype,
-        update: anytype,
+        update_document: anytype,
     ) !crud.UpdateResult {
         return self.client.updateOne(
             self.database_name,
             self.name,
             filter,
-            update,
+            update_document,
+        );
+    }
+
+    pub fn updateOneWithOptions(
+        self: Collection,
+        filter: anytype,
+        update_document: anytype,
+        options: UpdateOptions,
+    ) !crud.UpdateResult {
+        return self.client.updateOneWithOptions(
+            self.database_name,
+            self.name,
+            filter,
+            update_document,
+            options,
         );
     }
 
     pub fn updateMany(
         self: Collection,
         filter: anytype,
-        update: anytype,
+        update_document: anytype,
     ) !crud.UpdateResult {
         return self.client.updateMany(
             self.database_name,
             self.name,
             filter,
-            update,
+            update_document,
+        );
+    }
+
+    pub fn updateManyWithOptions(
+        self: Collection,
+        filter: anytype,
+        update_document: anytype,
+        options: UpdateOptions,
+    ) !crud.UpdateResult {
+        return self.client.updateManyWithOptions(
+            self.database_name,
+            self.name,
+            filter,
+            update_document,
+            options,
         );
     }
 
@@ -814,6 +916,21 @@ pub const Collection = struct {
             self.name,
             filter,
             replacement,
+        );
+    }
+
+    pub fn replaceOneWithOptions(
+        self: Collection,
+        filter: anytype,
+        replacement: anytype,
+        options: ReplaceOneOptions,
+    ) !crud.UpdateResult {
+        return self.client.replaceOneWithOptions(
+            self.database_name,
+            self.name,
+            filter,
+            replacement,
+            options,
         );
     }
 
