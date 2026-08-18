@@ -34,7 +34,7 @@ SHA-256
 StoredKey
 ```
 
-The current BONGO-0001 implementation reaches `AuthMessage`.
+The current BONGO-0001 implementation reaches `ClientProof`.
 
 ## SaltedPassword
 
@@ -71,14 +71,7 @@ The ClientKey is later combined with the ClientSignature to produce the proof se
 StoredKey = SHA-256(ClientKey)
 ```
 
-The StoredKey is a one-way hash of the ClientKey. SCRAM uses it to calculate the ClientSignature:
-
-```text
-ClientSignature = HMAC-SHA-256(
-    StoredKey,
-    AuthMessage
-)
-```
+The StoredKey is a one-way hash of the ClientKey. SCRAM uses it to calculate the ClientSignature.
 
 Bongo does not send the StoredKey or ClientKey directly to MongoDB.
 
@@ -114,28 +107,49 @@ Bongo's `authMessage()` helper joins those original byte sequences with commas. 
 
 The resulting AuthMessage becomes the message input to both the client and server signature calculations.
 
-## What comes next
-
-The remaining client proof path is:
+## ClientSignature
 
 ```text
-StoredKey
-   +
-AuthMessage
-   │
-   ▼
-HMAC-SHA-256
-   │
-   ▼
-ClientSignature
-   +
-ClientKey
-   │
-   ▼ XOR
+ClientSignature = HMAC-SHA-256(
+    StoredKey,
+    AuthMessage
+)
+```
+
+The StoredKey is the HMAC key and the exact AuthMessage transcript is the HMAC message.
+
+The ClientSignature is not sent directly to MongoDB. It is combined with the ClientKey to produce the ClientProof.
+
+## ClientProof
+
+```text
+ClientProof = ClientKey XOR ClientSignature
+```
+
+Bongo XORs the two fixed 32-byte values byte by byte. The result is another 32-byte value.
+
+For the RFC 7677 SCRAM-SHA-256 example, Base64-encoding that ClientProof produces:
+
+```text
+dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
+```
+
+That matches the `p=` value in RFC 7677's client-final message.
+
+The raw ClientProof is not yet a complete client-final message. It still needs to be Base64-encoded and appended to the client-final-message-without-proof.
+
+## What comes next
+
+The remaining client message path is:
+
+```text
 ClientProof
    │
    ▼
-Base64 proof
+Base64
+   │
+   ▼
+p=<proof>
    │
    ▼
 client-final message
@@ -160,7 +174,8 @@ Bongo                                      MongoDB
   │ derive ClientKey                          │
   │ derive StoredKey                          │
   │ build AuthMessage                         │
-  │ build ClientProof                         │
+  │ derive ClientSignature                    │
+  │ derive ClientProof                        │
   │                                           │
   │ client-final                              │
   │──────────────────────────────────────────>│
