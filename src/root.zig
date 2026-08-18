@@ -8,6 +8,7 @@ pub const Cursor = @import("mongo/client.zig").Cursor;
 pub const FindResult = @import("mongo/client.zig").FindResult;
 pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
+pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
 pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
 pub const DeleteResult = @import("mongo/crud.zig").DeleteResult;
 
@@ -24,6 +25,7 @@ pub const mongo = struct {
     pub const FindResult = @import("mongo/client.zig").FindResult;
     pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
+    pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
     pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
     pub const DeleteResult = @import("mongo/crud.zig").DeleteResult;
 };
