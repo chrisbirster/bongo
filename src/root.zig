@@ -14,4 +14,5 @@ test {
     _ = @import("mongo/scram.zig");
     _ = @import("mongo/scram_final.zig");
     _ = @import("mongo/scram_server.zig");
+    _ = @import("mongo/sasl.zig");
 }
