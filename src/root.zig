@@ -16,6 +16,8 @@ pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
 pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
 pub const WriteConcern = @import("mongo/client.zig").WriteConcern;
 pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
+pub const ReadConcern = @import("mongo/client.zig").ReadConcern;
+pub const ReadConcernLevel = @import("mongo/client.zig").ReadConcernLevel;
 pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
 pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -43,6 +45,8 @@ pub const mongo = struct {
     pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
     pub const WriteConcern = @import("mongo/client.zig").WriteConcern;
     pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
+    pub const ReadConcern = @import("mongo/client.zig").ReadConcern;
+    pub const ReadConcernLevel = @import("mongo/client.zig").ReadConcernLevel;
     pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
     pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -70,4 +74,6 @@ test {
     _ = @import("mongo/bulk.zig");
     _ = @import("mongo/write_concern.zig");
     _ = @import("mongo/write_command.zig");
+    _ = @import("mongo/read_concern.zig");
+    _ = @import("mongo/read_command.zig");
 }
