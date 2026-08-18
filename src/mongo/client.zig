@@ -2,6 +2,7 @@ const std = @import("std");
 const bson = @import("../bson.zig");
 const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
+const crud = @import("crud.zig");
 const op_msg = @import("op_msg.zig");
 
 const Allocator = std.mem.Allocator;
@@ -127,6 +128,35 @@ pub const Client = struct {
         );
     }
 
+    /// Insert one document into a collection.
+    pub fn insertOne(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        document: anytype,
+    ) !crud.InsertOneResult {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try crud.encodeInsertOne(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            document,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return crud.parseInsertOneResponse(response, request_id);
+    }
+
     fn getMore(
         self: *Client,
         database_name: []const u8,
@@ -245,6 +275,17 @@ pub const Collection = struct {
             self.database_name,
             self.name,
             filter,
+        );
+    }
+
+    pub fn insertOne(
+        self: Collection,
+        document: anytype,
+    ) !crud.InsertOneResult {
+        return self.client.insertOne(
+            self.database_name,
+            self.name,
+            document,
         );
     }
 };
