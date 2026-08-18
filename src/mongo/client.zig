@@ -25,10 +25,6 @@ pub const Error = error{
     InvalidBatchDocument,
 };
 
-/// Application-facing MongoDB client.
-///
-/// The client owns one authenticated TCP connection and hides MongoDB OP_MSG
-/// framing from normal application calls.
 pub const Client = struct {
     allocator: Allocator,
     connection: Connection,
@@ -42,7 +38,6 @@ pub const Client = struct {
         auth_database: []const u8 = "admin",
     };
 
-    /// Connect to MongoDB and authenticate the connection with SCRAM-SHA-256.
     pub fn connect(
         io: Io,
         allocator: Allocator,
@@ -75,10 +70,6 @@ pub const Client = struct {
         self.* = undefined;
     }
 
-    /// Return a lightweight handle for one MongoDB database.
-    ///
-    /// The database name is borrowed; the caller must keep it alive while the
-    /// handle is in use.
     pub fn database(self: *Client, name: []const u8) Database {
         return .{
             .client = self,
@@ -86,7 +77,6 @@ pub const Client = struct {
         };
     }
 
-    /// Run a MongoDB find command and return a cursor over all result batches.
     pub fn find(
         self: *Client,
         database_name: []const u8,
@@ -122,6 +112,54 @@ pub const Client = struct {
             database_name,
             collection_name,
         );
+    }
+
+    pub fn findOne(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+    ) !?OwnedDocument {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try op_msg.encodeCommand(
+            self.allocator,
+            .{
+                .find = collection_name,
+                .filter = filter,
+                .limit = @as(i32, 1),
+                .singleBatch = true,
+                .@"$db" = database_name,
+            },
+            .{
+                .request_id = request_id,
+            },
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+
+        var cursor = try Cursor.init(
+            self,
+            response,
+            request_id,
+            database_name,
+            collection_name,
+        );
+        defer cursor.deinit();
+
+        const document = (try cursor.next()) orelse return null;
+        const bytes = try self.allocator.dupe(u8, document);
+
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
     }
 
     pub fn insertOne(
@@ -325,6 +363,17 @@ pub const Collection = struct {
         );
     }
 
+    pub fn findOne(
+        self: Collection,
+        filter: anytype,
+    ) !?OwnedDocument {
+        return self.client.findOne(
+            self.database_name,
+            self.name,
+            filter,
+        );
+    }
+
     pub fn insertOne(
         self: Collection,
         document: anytype,
@@ -358,6 +407,16 @@ pub const Collection = struct {
             self.name,
             filter,
         );
+    }
+};
+
+pub const OwnedDocument = struct {
+    allocator: Allocator,
+    bytes: []u8,
+
+    pub fn deinit(self: *OwnedDocument) void {
+        self.allocator.free(self.bytes);
+        self.* = undefined;
     }
 };
 
