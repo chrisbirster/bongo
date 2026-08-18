@@ -7,6 +7,7 @@ pub const Error = Allocator.Error || error{
     InvalidServerFirstMessage,
     InvalidServerNonce,
     InvalidIterationCount,
+    InvalidSalt,
     UnsupportedExtension,
 };
 
@@ -130,6 +131,60 @@ fn isValidNonce(nonce: []const u8) bool {
     }
 
     return true;
+}
+
+pub fn decodeSalt(
+    allocator: Allocator,
+    encoded_salt: []const u8,
+) Error![]u8 {
+    const decoder = std.base64.standard.Decoder;
+
+    const decoded_len = decoder.calcSizeForSlice(
+        encoded_salt,
+    ) catch {
+        return error.InvalidSalt;
+    };
+
+    const salt = try allocator.alloc(
+        u8,
+        decoded_len,
+    );
+    errdefer allocator.free(salt);
+
+    decoder.decode(
+        salt,
+        encoded_salt,
+    ) catch {
+        return error.InvalidSalt;
+    };
+
+    std.debug.assert(salt.len == decoded_len);
+
+    return salt;
+}
+
+test "SCRAM salt decodes from Base64" {
+    const salt = try decodeSalt(
+        std.testing.allocator,
+        "c2FsdA==",
+    );
+    defer std.testing.allocator.free(salt);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        "salt",
+        salt,
+    );
+}
+
+test "SCRAM salt rejects invalid Base64" {
+    try std.testing.expectError(
+        error.InvalidSalt,
+        decodeSalt(
+            std.testing.allocator,
+            "not%%%base64",
+        ),
+    );
 }
 
 test "client first message includes username and nonce" {
