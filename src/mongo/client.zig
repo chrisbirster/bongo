@@ -8,6 +8,8 @@ const crud = @import("crud.zig");
 const distinct_ops = @import("distinct.zig");
 const find_and_modify = @import("find_and_modify.zig");
 const op_msg = @import("op_msg.zig");
+const read_command = @import("read_command.zig");
+const read_concern = @import("read_concern.zig");
 const replacement_ops = @import("replacement.zig");
 const write_command = @import("write_command.zig");
 const write_concern = @import("write_concern.zig");
@@ -24,6 +26,8 @@ pub const BulkWriteOptions = bulk_ops.Options;
 pub const BulkWriteResult = bulk_ops.Result;
 pub const WriteConcern = write_concern.WriteConcern;
 pub const WriteConcernW = write_concern.W;
+pub const ReadConcern = read_concern.ReadConcern;
+pub const ReadConcernLevel = read_concern.Level;
 
 pub const UpdateOptions = struct {
     upsert: bool = false,
@@ -56,6 +60,7 @@ pub const Client = struct {
     connection: Connection,
     next_request_id: i32,
     write_concern: ?WriteConcern,
+    read_concern: ?ReadConcern,
 
     pub const Options = struct {
         username: []const u8,
@@ -64,6 +69,7 @@ pub const Client = struct {
         port: u16 = 27017,
         auth_database: []const u8 = "admin",
         write_concern: ?WriteConcern = null,
+        read_concern: ?ReadConcern = null,
     };
 
     pub fn connect(
@@ -91,6 +97,7 @@ pub const Client = struct {
             .connection = connection,
             .next_request_id = 1,
             .write_concern = options.write_concern,
+            .read_concern = options.read_concern,
         };
     }
 
@@ -113,15 +120,25 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try op_msg.encodeCommand(
-            self.allocator,
-            .{
-                .find = collection_name,
-                .filter = filter,
-                .@"$db" = database_name,
-            },
-            .{ .request_id = request_id },
-        );
+        const request = if (self.read_concern) |concern|
+            try read_command.encodeFind(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                concern,
+            )
+        else
+            try op_msg.encodeCommand(
+                self.allocator,
+                .{
+                    .find = collection_name,
+                    .filter = filter,
+                    .@"$db" = database_name,
+                },
+                .{ .request_id = request_id },
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -148,17 +165,27 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try op_msg.encodeCommand(
-            self.allocator,
-            .{
-                .find = collection_name,
-                .filter = filter,
-                .limit = @as(i32, 1),
-                .singleBatch = true,
-                .@"$db" = database_name,
-            },
-            .{ .request_id = request_id },
-        );
+        const request = if (self.read_concern) |concern|
+            try read_command.encodeFindOne(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                concern,
+            )
+        else
+            try op_msg.encodeCommand(
+                self.allocator,
+                .{
+                    .find = collection_name,
+                    .filter = filter,
+                    .limit = @as(i32, 1),
+                    .singleBatch = true,
+                    .@"$db" = database_name,
+                },
+                .{ .request_id = request_id },
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -339,14 +366,26 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try count_ops.encodeCountDocuments(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            options,
-        );
+        const request = if (self.read_concern) |concern|
+            try read_command.encodeCountDocuments(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                options.skip,
+                options.limit,
+                concern,
+            )
+        else
+            try count_ops.encodeCountDocuments(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                options,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -367,12 +406,21 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try count_ops.encodeEstimatedDocumentCount(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-        );
+        const request = if (self.read_concern) |concern|
+            try read_command.encodeEstimatedDocumentCount(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                concern,
+            )
+        else
+            try count_ops.encodeEstimatedDocumentCount(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -395,14 +443,25 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try distinct_ops.encode(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            key,
-            filter,
-        );
+        const request = if (self.read_concern) |concern|
+            try read_command.encodeDistinct(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                key,
+                filter,
+                concern,
+            )
+        else
+            try distinct_ops.encode(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                key,
+                filter,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
