@@ -199,7 +199,10 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{ .allocator = self.allocator, .bytes = bytes };
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
     }
 
     pub fn findOneAndReplace(
@@ -237,7 +240,10 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{ .allocator = self.allocator, .bytes = bytes };
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
     }
 
     pub fn findOneAndDelete(
@@ -271,7 +277,10 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{ .allocator = self.allocator, .bytes = bytes };
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
     }
 
     pub fn countDocuments(
@@ -292,6 +301,32 @@ pub const Client = struct {
             collection_name,
             filter,
             options,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return count_ops.parseCountResponse(response, request_id);
+    }
+
+    pub fn estimatedDocumentCount(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+    ) !i64 {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try count_ops.encodeEstimatedDocumentCount(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
         );
         defer self.allocator.free(request);
 
@@ -661,6 +696,13 @@ pub const Collection = struct {
             self.name,
             filter,
             options,
+        );
+    }
+
+    pub fn estimatedDocumentCount(self: Collection) !i64 {
+        return self.client.estimatedDocumentCount(
+            self.database_name,
+            self.name,
         );
     }
 
