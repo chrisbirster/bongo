@@ -87,9 +87,6 @@ pub const Client = struct {
     }
 
     /// Run a MongoDB find command and return a cursor over all result batches.
-    ///
-    /// `filter` may be any Zig struct or anonymous struct supported by
-    /// `bson.encode`, for example `.{ .active = true }` or `.{}`.
     pub fn find(
         self: *Client,
         database_name: []const u8,
@@ -100,7 +97,6 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-
         const request = try op_msg.encodeCommand(
             self.allocator,
             .{
@@ -128,7 +124,6 @@ pub const Client = struct {
         );
     }
 
-    /// Insert one document into a collection.
     pub fn insertOne(
         self: *Client,
         database_name: []const u8,
@@ -157,7 +152,6 @@ pub const Client = struct {
         return crud.parseInsertOneResponse(response, request_id);
     }
 
-    /// Update one document matching a filter.
     pub fn updateOne(
         self: *Client,
         database_name: []const u8,
@@ -186,6 +180,34 @@ pub const Client = struct {
         defer self.allocator.free(response);
 
         return crud.parseUpdateResponse(response, request_id);
+    }
+
+    pub fn deleteOne(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+    ) !crud.DeleteResult {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try crud.encodeDeleteOne(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return crud.parseDeleteResponse(response, request_id);
     }
 
     fn getMore(
@@ -277,15 +299,10 @@ pub const Client = struct {
     }
 };
 
-/// Lightweight view of one database on a Client.
 pub const Database = struct {
     client: *Client,
     name: []const u8,
 
-    /// Return a lightweight handle for one collection in this database.
-    ///
-    /// The collection name is borrowed; the caller must keep it alive while
-    /// the handle is in use.
     pub fn collection(self: Database, name: []const u8) Collection {
         return .{
             .client = self.client,
@@ -295,7 +312,6 @@ pub const Database = struct {
     }
 };
 
-/// Lightweight view of one MongoDB collection.
 pub const Collection = struct {
     client: *Client,
     database_name: []const u8,
@@ -332,16 +348,19 @@ pub const Collection = struct {
             update,
         );
     }
+
+    pub fn deleteOne(
+        self: Collection,
+        filter: anytype,
+    ) !crud.DeleteResult {
+        return self.client.deleteOne(
+            self.database_name,
+            self.name,
+            filter,
+        );
+    }
 };
 
-/// Stateful MongoDB cursor.
-///
-/// The cursor owns the current wire response and fetches later batches with
-/// `getMore` as needed. A BSON document returned from `next()` borrows from the
-/// current batch and is valid until the next call to `next()`, `close()`, or
-/// `deinit()`.
-///
-/// A cursor must not outlive its Client.
 pub const Cursor = struct {
     client: *Client,
     allocator: Allocator,
@@ -392,7 +411,6 @@ pub const Cursor = struct {
         };
     }
 
-    /// Return the next BSON document, fetching later batches automatically.
     pub fn next(self: *Cursor) !?[]const u8 {
         if (self.closed) return null;
 
@@ -406,22 +424,18 @@ pub const Cursor = struct {
         }
     }
 
-    /// Compatibility helper for code written against the original FindResult.
     pub fn iterator(self: *Cursor) !*Cursor {
         return self;
     }
 
-    /// Current server cursor id. Zero means MongoDB has exhausted the cursor.
     pub fn id(self: Cursor) i64 {
         return self.cursor_id;
     }
 
-    /// Namespace returned by MongoDB for this cursor.
     pub fn namespace(self: Cursor) []const u8 {
         return self.namespace_name;
     }
 
-    /// Stop iteration and release an open server-side cursor.
     pub fn close(self: *Cursor) !void {
         if (self.closed) return;
         self.closed = true;
@@ -438,10 +452,6 @@ pub const Cursor = struct {
         );
     }
 
-    /// Release local cursor memory and best-effort server cursor state.
-    ///
-    /// Explicit callers that need to observe killCursors errors can call
-    /// `close()` before `deinit()`.
     pub fn deinit(self: *Cursor) void {
         self.close() catch {};
 
@@ -474,7 +484,6 @@ pub const Cursor = struct {
     }
 };
 
-/// Compatibility alias retained for the first application-facing find API.
 pub const FindResult = Cursor;
 
 const ParsedCursorBatch = struct {
