@@ -38,7 +38,7 @@ pub fn authenticate(
     const prepared_password = try preparePassword(password);
 
     var nonce_raw: [nonce_raw_length]u8 = undefined;
-    std.crypto.random.bytes(&nonce_raw);
+    connection.io.random(&nonce_raw);
 
     var nonce_buffer: [nonce_encoded_length]u8 = undefined;
     const nonce = std.base64.standard_no_pad.Encoder.encode(
