@@ -14,8 +14,11 @@ pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOpti
 pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
 pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
 pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
+pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
+pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
 pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
+pub const UpsertedId = @import("mongo/crud.zig").UpsertedId;
 pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
 pub const DeleteResult = @import("mongo/crud.zig").DeleteResult;
 
@@ -36,8 +39,11 @@ pub const mongo = struct {
     pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
     pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
     pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
+    pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
+    pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
     pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
+    pub const UpsertedId = @import("mongo/crud.zig").UpsertedId;
     pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
     pub const DeleteResult = @import("mongo/crud.zig").DeleteResult;
 };

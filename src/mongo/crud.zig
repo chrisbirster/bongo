@@ -12,6 +12,8 @@ pub const Error = error{
     InvalidWriteErrors,
     MissingCount,
     InvalidCount,
+    InvalidUpserted,
+    MissingUpsertedId,
 };
 
 pub const InsertOneResult = struct {
@@ -22,9 +24,29 @@ pub const InsertManyResult = struct {
     inserted_count: i64,
 };
 
+pub const UpsertedId = struct {
+    allocator: Allocator,
+    value: bson.Value,
+    owned_a: ?[]u8 = null,
+    owned_b: ?[]u8 = null,
+
+    pub fn deinit(self: *UpsertedId) void {
+        if (self.owned_a) |bytes| self.allocator.free(bytes);
+        if (self.owned_b) |bytes| self.allocator.free(bytes);
+        self.* = undefined;
+    }
+};
+
 pub const UpdateResult = struct {
     matched_count: i64,
     modified_count: i64,
+    upserted_count: i64 = 0,
+    upserted_id: ?UpsertedId = null,
+
+    pub fn deinit(self: *UpdateResult) void {
+        if (self.upserted_id) |*id| id.deinit();
+        self.* = undefined;
+    }
 };
 
 pub const DeleteResult = struct {
@@ -88,6 +110,7 @@ pub fn encodeUpdateOne(
         filter,
         update,
         false,
+        false,
     );
 }
 
@@ -99,11 +122,13 @@ pub fn encodeUpdate(
     filter: anytype,
     update: anytype,
     multi: bool,
+    upsert: bool,
 ) ![]u8 {
     const UpdateSpec = struct {
         q: @TypeOf(filter),
         u: @TypeOf(update),
         multi: bool,
+        upsert: bool,
     };
 
     const updates = [_]UpdateSpec{
@@ -111,6 +136,7 @@ pub fn encodeUpdate(
             .q = filter,
             .u = update,
             .multi = multi,
+            .upsert = upsert,
         },
     };
 
@@ -210,6 +236,7 @@ pub fn parseInsertManyResponse(
 }
 
 pub fn parseUpdateResponse(
+    allocator: Allocator,
     response_bytes: []const u8,
     expected_response_to: i32,
 ) !UpdateResult {
@@ -218,9 +245,20 @@ pub fn parseUpdateResponse(
         expected_response_to,
     );
 
+    const affected_count = try requiredCount(body, "n");
+    const modified_count = try requiredCount(body, "nModified");
+    var upserted = try parseUpserted(allocator, body);
+    errdefer {
+        if (upserted.id) |*id| id.deinit();
+    }
+
+    if (affected_count < upserted.count) return error.InvalidCount;
+
     return .{
-        .matched_count = try requiredCount(body, "n"),
-        .modified_count = try requiredCount(body, "nModified"),
+        .matched_count = affected_count - upserted.count,
+        .modified_count = modified_count,
+        .upserted_count = upserted.count,
+        .upserted_id = upserted.id,
     };
 }
 
@@ -236,6 +274,119 @@ pub fn parseDeleteResponse(
     return .{
         .deleted_count = try requiredCount(body, "n"),
     };
+}
+
+const ParsedUpserted = struct {
+    count: i64,
+    id: ?UpsertedId,
+};
+
+fn parseUpserted(
+    allocator: Allocator,
+    body: []const u8,
+) !ParsedUpserted {
+    const value = (try bson.Reader.get(body, "upserted")) orelse {
+        return .{ .count = 0, .id = null };
+    };
+
+    const array = switch (value) {
+        .array => |bytes| bytes,
+        else => return error.InvalidUpserted,
+    };
+    try bson.validateArray(array);
+
+    var reader = try bson.Reader.init(array);
+    const first = (try reader.next()) orelse {
+        return .{ .count = 0, .id = null };
+    };
+    if ((try reader.next()) != null) return error.InvalidUpserted;
+
+    const document = switch (first.value) {
+        .document => |bytes| bytes,
+        else => return error.InvalidUpserted,
+    };
+    const id_value = (try bson.Reader.get(document, "_id")) orelse
+        return error.MissingUpsertedId;
+
+    return .{
+        .count = 1,
+        .id = try cloneValue(allocator, id_value),
+    };
+}
+
+fn cloneValue(allocator: Allocator, value: bson.Value) !UpsertedId {
+    var result = UpsertedId{
+        .allocator = allocator,
+        .value = value,
+    };
+    errdefer result.deinit();
+
+    switch (value) {
+        .string => |bytes| {
+            const copy = try allocator.dupe(u8, bytes);
+            result.owned_a = copy;
+            result.value = .{ .string = copy };
+        },
+        .document => |bytes| {
+            const copy = try allocator.dupe(u8, bytes);
+            result.owned_a = copy;
+            result.value = .{ .document = copy };
+        },
+        .array => |bytes| {
+            const copy = try allocator.dupe(u8, bytes);
+            result.owned_a = copy;
+            result.value = .{ .array = copy };
+        },
+        .binary => |binary| {
+            const copy = try allocator.dupe(u8, binary.data);
+            result.owned_a = copy;
+            result.value = .{ .binary = .{
+                .subtype = binary.subtype,
+                .data = copy,
+            } };
+        },
+        .regex => |regex| {
+            const pattern = try allocator.dupe(u8, regex.pattern);
+            result.owned_a = pattern;
+            const options = try allocator.dupe(u8, regex.options);
+            result.owned_b = options;
+            result.value = .{ .regex = .{
+                .pattern = pattern,
+                .options = options,
+            } };
+        },
+        .db_pointer => |pointer| {
+            const namespace = try allocator.dupe(u8, pointer.namespace);
+            result.owned_a = namespace;
+            result.value = .{ .db_pointer = .{
+                .namespace = namespace,
+                .id = pointer.id,
+            } };
+        },
+        .javascript => |javascript| {
+            const code = try allocator.dupe(u8, javascript.code);
+            result.owned_a = code;
+            result.value = .{ .javascript = .{ .code = code } };
+        },
+        .symbol => |symbol| {
+            const bytes = try allocator.dupe(u8, symbol.value);
+            result.owned_a = bytes;
+            result.value = .{ .symbol = .{ .value = bytes } };
+        },
+        .javascript_with_scope => |javascript| {
+            const code = try allocator.dupe(u8, javascript.code);
+            result.owned_a = code;
+            const scope = try allocator.dupe(u8, javascript.scope);
+            result.owned_b = scope;
+            result.value = .{ .javascript_with_scope = .{
+                .code = code,
+                .scope = scope,
+            } };
+        },
+        else => {},
+    }
+
+    return result;
 }
 
 fn validatedWriteBody(
@@ -423,6 +574,30 @@ test "updateOne command encodes filter update and multi false" {
     try std.testing.expect(
         !(try bson.Reader.get(spec, "multi")).?.boolean,
     );
+    try std.testing.expect(
+        !(try bson.Reader.get(spec, "upsert")).?.boolean,
+    );
+}
+
+test "update command encodes upsert true" {
+    const allocator = std.testing.allocator;
+    const request = try encodeUpdate(
+        allocator,
+        45,
+        "test",
+        "users",
+        .{ .name = "Bongo" },
+        .{ .@"$set" = .{ .active = true } },
+        false,
+        true,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    const updates = (try bson.Reader.get(body, "updates")).?.array;
+    const spec = (try bson.Reader.get(updates, "0")).?.document;
+
+    try std.testing.expect((try bson.Reader.get(spec, "upsert")).?.boolean);
 }
 
 test "update response returns matched and modified counts" {
@@ -441,16 +616,55 @@ test "update response returns matched and modified counts" {
     );
     defer allocator.free(response);
 
-    const result = try parseUpdateResponse(response, 44);
+    var result = try parseUpdateResponse(allocator, response, 44);
+    defer result.deinit();
     try std.testing.expectEqual(@as(i64, 1), result.matched_count);
     try std.testing.expectEqual(@as(i64, 1), result.modified_count);
+    try std.testing.expectEqual(@as(i64, 0), result.upserted_count);
+    try std.testing.expect(result.upserted_id == null);
+}
+
+test "update response separates upsert from matched count" {
+    const allocator = std.testing.allocator;
+    const Upserted = struct {
+        index: i32,
+        _id: []const u8,
+    };
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .n = @as(i32, 1),
+            .nModified = @as(i32, 0),
+            .upserted = [_]Upserted{.{
+                .index = 0,
+                ._id = "bongo-upsert",
+            }},
+            .ok = @as(f64, 1.0),
+        },
+        .{
+            .request_id = 93,
+            .response_to = 45,
+        },
+    );
+    defer allocator.free(response);
+
+    var result = try parseUpdateResponse(allocator, response, 45);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 0), result.matched_count);
+    try std.testing.expectEqual(@as(i64, 0), result.modified_count);
+    try std.testing.expectEqual(@as(i64, 1), result.upserted_count);
+    try std.testing.expectEqualStrings(
+        "bongo-upsert",
+        result.upserted_id.?.value.string,
+    );
 }
 
 test "deleteOne command encodes filter and limit one" {
     const allocator = std.testing.allocator;
     const request = try encodeDeleteOne(
         allocator,
-        45,
+        46,
         "test",
         "users",
         .{ .name = "Bongo" },
@@ -477,12 +691,12 @@ test "delete response returns deleted count" {
             .ok = @as(f64, 1.0),
         },
         .{
-            .request_id = 93,
-            .response_to = 45,
+            .request_id = 94,
+            .response_to = 46,
         },
     );
     defer allocator.free(response);
 
-    const result = try parseDeleteResponse(response, 45);
+    const result = try parseDeleteResponse(response, 46);
     try std.testing.expectEqual(@as(i64, 1), result.deleted_count);
 }
