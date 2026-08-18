@@ -44,6 +44,24 @@ pub fn encodeCountDocuments(
     );
 }
 
+pub fn encodeEstimatedDocumentCount(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+) ![]u8 {
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .count = collection_name,
+            .@"$db" = database_name,
+        },
+        .{
+            .request_id = request_id,
+        },
+    );
+}
+
 pub fn parseCountResponse(
     response_bytes: []const u8,
     expected_response_to: i32,
@@ -113,6 +131,25 @@ test "countDocuments encodes query skip and limit" {
     );
 }
 
+test "estimatedDocumentCount omits query" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeEstimatedDocumentCount(
+        allocator,
+        54,
+        "test",
+        "users",
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    try std.testing.expectEqualStrings(
+        "users",
+        (try bson.Reader.get(body, "count")).?.string,
+    );
+    try std.testing.expect((try bson.Reader.get(body, "query")) == null);
+}
+
 test "countDocuments rejects negative options" {
     const allocator = std.testing.allocator;
 
@@ -120,7 +157,7 @@ test "countDocuments rejects negative options" {
         error.InvalidSkip,
         encodeCountDocuments(
             allocator,
-            54,
+            55,
             "test",
             "users",
             .{},
@@ -132,7 +169,7 @@ test "countDocuments rejects negative options" {
         error.InvalidLimit,
         encodeCountDocuments(
             allocator,
-            55,
+            56,
             "test",
             "users",
             .{},
