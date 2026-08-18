@@ -7,6 +7,7 @@ pub const Collection = @import("mongo/client.zig").Collection;
 pub const Cursor = @import("mongo/client.zig").Cursor;
 pub const FindResult = @import("mongo/client.zig").FindResult;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
+pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
 
 pub const mongo = struct {
     pub const op_msg = @import("mongo/op_msg.zig");
@@ -20,6 +21,7 @@ pub const mongo = struct {
     pub const Cursor = @import("mongo/client.zig").Cursor;
     pub const FindResult = @import("mongo/client.zig").FindResult;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
+    pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
 };
 
 test {
