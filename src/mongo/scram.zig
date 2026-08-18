@@ -256,6 +256,48 @@ pub fn authMessage(
     );
 }
 
+/// Derive the SCRAM ClientSignature from the StoredKey and AuthMessage.
+///
+/// RFC 5802 defines this as:
+/// ClientSignature := HMAC(StoredKey, AuthMessage)
+pub fn clientSignature(
+    stored_key: *const [salted_password_length]u8,
+    auth_message: []const u8,
+) [salted_password_length]u8 {
+    var result: [salted_password_length]u8 = undefined;
+
+    HmacSha256.create(
+        &result,
+        auth_message,
+        stored_key[0..],
+    );
+
+    std.debug.assert(result.len == salted_password_length);
+    return result;
+}
+
+/// Derive the SCRAM ClientProof from the ClientKey and ClientSignature.
+///
+/// RFC 5802 defines this as:
+/// ClientProof := ClientKey XOR ClientSignature
+pub fn clientProof(
+    client_key: *const [salted_password_length]u8,
+    client_signature: *const [salted_password_length]u8,
+) [salted_password_length]u8 {
+    var result: [salted_password_length]u8 = undefined;
+
+    for (
+        result[0..],
+        client_key[0..],
+        client_signature[0..],
+    ) |*result_byte, key_byte, signature_byte| {
+        result_byte.* = key_byte ^ signature_byte;
+    }
+
+    std.debug.assert(result.len == salted_password_length);
+    return result;
+}
+
 test "SCRAM salt decodes from Base64" {
     const salt = try decodeSalt(
         std.testing.allocator,
@@ -378,6 +420,66 @@ test "SCRAM auth message matches SHA-256 conversation" {
     try std.testing.expectEqualStrings(
         "n=user,r=rOprNGfwEbeRWgbNEkqO,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0",
         message,
+    );
+}
+
+test "SCRAM client signature matches SHA-256 conversation" {
+    const stored_key = [_]u8{
+        0x58, 0x6e, 0x5d, 0xf2, 0x83, 0xe6, 0xdc, 0xeb,
+        0x5c, 0x3e, 0x79, 0x1d, 0x8b, 0x85, 0x28, 0xec,
+        0x19, 0x1e, 0x66, 0x40, 0x45, 0xce, 0x97, 0x17,
+        0x92, 0xe2, 0xe6, 0xb5, 0xbb, 0x13, 0xe2, 0xa6,
+    };
+
+    const result = clientSignature(
+        &stored_key,
+        "n=user,r=rOprNGfwEbeRWgbNEkqO,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0",
+    );
+
+    const expected = [_]u8{
+        0xd2, 0x73, 0x12, 0x46, 0x7c, 0x28, 0xa4, 0x0a,
+        0x8a, 0x7f, 0x05, 0xc7, 0x3c, 0x0d, 0xe3, 0x3e,
+        0xb3, 0xcb, 0xfb, 0x4a, 0x83, 0x78, 0x3b, 0x58,
+        0x14, 0x4c, 0xf1, 0x9a, 0xc6, 0xbe, 0x1b, 0xdf,
+    };
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &expected,
+        &result,
+    );
+}
+
+test "SCRAM client proof matches SHA-256 conversation" {
+    const client_key = [_]u8{
+        0xa6, 0x0f, 0xc9, 0x23, 0xd6, 0x7e, 0x86, 0x44,
+        0xa9, 0x2d, 0x16, 0xb9, 0x6e, 0xda, 0x5e, 0xf4,
+        0x65, 0x6b, 0x0c, 0x72, 0x5c, 0x48, 0x43, 0x74,
+        0xbe, 0x25, 0x53, 0x55, 0x76, 0x99, 0x6e, 0x8b,
+    };
+    const client_signature = [_]u8{
+        0xd2, 0x73, 0x12, 0x46, 0x7c, 0x28, 0xa4, 0x0a,
+        0x8a, 0x7f, 0x05, 0xc7, 0x3c, 0x0d, 0xe3, 0x3e,
+        0xb3, 0xcb, 0xfb, 0x4a, 0x83, 0x78, 0x3b, 0x58,
+        0x14, 0x4c, 0xf1, 0x9a, 0xc6, 0xbe, 0x1b, 0xdf,
+    };
+
+    const result = clientProof(
+        &client_key,
+        &client_signature,
+    );
+
+    const expected = [_]u8{
+        0x74, 0x7c, 0xdb, 0x65, 0xaa, 0x56, 0x22, 0x4e,
+        0x23, 0x52, 0x13, 0x7e, 0x52, 0xd7, 0xbd, 0xca,
+        0xd6, 0xa0, 0xf7, 0x38, 0xdf, 0x30, 0x78, 0x2c,
+        0xaa, 0x69, 0xa2, 0xcf, 0xb0, 0x27, 0x75, 0x54,
+    };
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &expected,
+        &result,
     );
 }
 
