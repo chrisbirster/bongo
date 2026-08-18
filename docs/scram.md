@@ -34,7 +34,7 @@ SHA-256
 StoredKey
 ```
 
-The current BONGO-0001 implementation reaches `ClientProof`.
+The current BONGO-0001 implementation reaches the complete SCRAM `client-final` message.
 
 ## SaltedPassword
 
@@ -136,30 +136,31 @@ dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
 
 That matches the `p=` value in RFC 7677's client-final message.
 
-The raw ClientProof is not yet a complete client-final message. It still needs to be Base64-encoded and appended to the client-final-message-without-proof.
+## Client-final message
 
-## What comes next
-
-The remaining client message path is:
+With channel binding disabled, the client-final-message-without-proof is:
 
 ```text
-ClientProof
-   │
-   ▼
-Base64
-   │
-   ▼
-p=<proof>
-   │
-   ▼
-client-final message
+c=biws,r=<combined nonce>
 ```
 
-Bongo will also derive a server key and verify MongoDB's server-final signature before treating authentication as successful.
+`biws` is the Base64 encoding of the GS2 header `n,,`.
+
+Bongo Base64-encodes the 32-byte ClientProof and appends it as the `p` attribute:
+
+```text
+c=biws,r=<combined nonce>,p=<Base64 ClientProof>
+```
+
+For the RFC 7677 conversation, the complete message is:
+
+```text
+c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
+```
 
 ## SCRAM conversation
 
-At a high level, authentication will eventually look like this:
+At a high level, authentication looks like this:
 
 ```text
 Bongo                                      MongoDB
@@ -176,6 +177,7 @@ Bongo                                      MongoDB
   │ build AuthMessage                         │
   │ derive ClientSignature                    │
   │ derive ClientProof                        │
+  │ build client-final                        │
   │                                           │
   │ client-final                              │
   │──────────────────────────────────────────>│
@@ -187,7 +189,7 @@ Bongo                                      MongoDB
   │                                           │
 ```
 
-MongoDB carries this SCRAM exchange inside the `saslStart` and `saslContinue` commands. That transport layer is implemented after the proof calculations are complete.
+MongoDB carries this SCRAM exchange inside the `saslStart` and `saslContinue` commands.
 
 ## References
 
