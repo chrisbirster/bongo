@@ -34,7 +34,7 @@ SHA-256
 StoredKey
 ```
 
-The current BONGO-0001 implementation reaches `StoredKey`.
+The current BONGO-0001 implementation reaches `AuthMessage`.
 
 ## SaltedPassword
 
@@ -82,14 +82,49 @@ ClientSignature = HMAC-SHA-256(
 
 Bongo does not send the StoredKey or ClientKey directly to MongoDB.
 
+## AuthMessage
+
+SCRAM signs the exact authentication transcript rather than a parsed or normalized representation of it.
+
+RFC 5802 defines the AuthMessage as:
+
+```text
+AuthMessage =
+    client-first-message-bare
+    + "," +
+    server-first-message
+    + "," +
+    client-final-message-without-proof
+```
+
+For the SCRAM-SHA-256 example from RFC 7677, the three pieces are:
+
+```text
+client-first-message-bare:
+n=user,r=rOprNGfwEbeRWgbNEkqO
+
+server-first-message:
+r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096
+
+client-final-message-without-proof:
+c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0
+```
+
+Bongo's `authMessage()` helper joins those original byte sequences with commas. It does not parse, reorder, normalize, or regenerate the fields. This matters because even semantically equivalent text would produce a different HMAC if the bytes changed.
+
+The resulting AuthMessage becomes the message input to both the client and server signature calculations.
+
 ## What comes next
 
-The remaining proof path is:
+The remaining client proof path is:
 
 ```text
 StoredKey
    +
 AuthMessage
+   │
+   ▼
+HMAC-SHA-256
    │
    ▼
 ClientSignature
@@ -124,6 +159,7 @@ Bongo                                      MongoDB
   │ derive SaltedPassword                     │
   │ derive ClientKey                          │
   │ derive StoredKey                          │
+  │ build AuthMessage                         │
   │ build ClientProof                         │
   │                                           │
   │ client-final                              │
