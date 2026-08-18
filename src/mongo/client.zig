@@ -284,16 +284,46 @@ pub const Client = struct {
         collection_name: []const u8,
         filter: anytype,
     ) !crud.DeleteResult {
+        return self.delete(
+            database_name,
+            collection_name,
+            filter,
+            1,
+        );
+    }
+
+    pub fn deleteMany(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+    ) !crud.DeleteResult {
+        return self.delete(
+            database_name,
+            collection_name,
+            filter,
+            0,
+        );
+    }
+
+    fn delete(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        limit: i32,
+    ) !crud.DeleteResult {
         if (database_name.len == 0) return error.EmptyDatabase;
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeDeleteOne(
+        const request = try crud.encodeDelete(
             self.allocator,
             request_id,
             database_name,
             collection_name,
             filter,
+            limit,
         );
         defer self.allocator.free(request);
 
@@ -462,6 +492,10 @@ pub const Collection = struct {
 
     pub fn deleteOne(self: Collection, filter: anytype) !crud.DeleteResult {
         return self.client.deleteOne(self.database_name, self.name, filter);
+    }
+
+    pub fn deleteMany(self: Collection, filter: anytype) !crud.DeleteResult {
+        return self.client.deleteMany(self.database_name, self.name, filter);
     }
 };
 
