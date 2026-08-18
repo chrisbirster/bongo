@@ -3,6 +3,7 @@ const bson = @import("../bson.zig");
 const command_cursor = @import("command_cursor.zig");
 const command_response = @import("command_response.zig");
 const op_msg = @import("op_msg.zig");
+const write_concern = @import("write_concern.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -25,6 +26,21 @@ pub fn createCollection(
         database.name,
         name,
         options,
+    );
+    defer client.allocator.free(request);
+
+    try command_response.sendVoid(client, request, request_id);
+}
+
+pub fn dropCollection(collection: anytype) !void {
+    const client = collection.client;
+    const request_id = command_cursor.takeRequestId(client);
+    const request = try encodeDrop(
+        client.allocator,
+        request_id,
+        collection.database_name,
+        collection.name,
+        client.write_concern,
     );
     defer client.allocator.free(request);
 
@@ -64,6 +80,38 @@ pub fn encodeCreate(
     return op_msg.encodeBody(
         allocator,
         body,
+        .{ .request_id = request_id },
+    );
+}
+
+pub fn encodeDrop(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    concern: ?write_concern.WriteConcern,
+) ![]u8 {
+    if (concern) |configured| {
+        const concern_document = try write_concern.encode(allocator, configured);
+        defer allocator.free(concern_document);
+
+        return op_msg.encodeCommand(
+            allocator,
+            .{
+                .drop = collection_name,
+                .writeConcern = bson.Value{ .document = concern_document },
+                .@"$db" = database_name,
+            },
+            .{ .request_id = request_id },
+        );
+    }
+
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .drop = collection_name,
+            .@"$db" = database_name,
+        },
         .{ .request_id = request_id },
     );
 }
@@ -112,5 +160,33 @@ test "createCollection flattens collection options into command" {
     try std.testing.expectEqualStrings(
         "event",
         (try bson.Reader.get(validator, "kind")).?.string,
+    );
+}
+
+test "dropCollection encodes optional write concern" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeDrop(
+        allocator,
+        70,
+        "test",
+        "events",
+        .{
+            .w = .majority,
+            .journal = true,
+        },
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    const concern = (try bson.Reader.get(body, "writeConcern")).?.document;
+
+    try std.testing.expectEqualStrings(
+        "events",
+        (try bson.Reader.get(body, "drop")).?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "majority",
+        (try bson.Reader.get(concern, "w")).?.string,
     );
 }
