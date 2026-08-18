@@ -19,4 +19,5 @@ test {
     _ = @import("integration/18_count_documents.zig");
     _ = @import("integration/19_estimated_document_count.zig");
     _ = @import("integration/20_distinct.zig");
+    _ = @import("integration/21_bulk_write.zig");
 }

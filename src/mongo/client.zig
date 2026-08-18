@@ -2,6 +2,7 @@ const std = @import("std");
 const bson = @import("../bson.zig");
 const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
+const bulk_ops = @import("bulk.zig");
 const count_ops = @import("count.zig");
 const crud = @import("crud.zig");
 const distinct_ops = @import("distinct.zig");
@@ -17,6 +18,8 @@ pub const FindOneAndUpdateOptions = find_and_modify.UpdateOptions;
 pub const FindOneAndReplaceOptions = find_and_modify.ReplaceOptions;
 pub const CountDocumentsOptions = count_ops.Options;
 pub const DistinctResult = distinct_ops.Result;
+pub const BulkWriteOptions = bulk_ops.Options;
+pub const BulkWriteResult = bulk_ops.Result;
 
 pub const Error = error{
     EmptyDatabase,
@@ -743,6 +746,14 @@ pub const Collection = struct {
             key,
             filter,
         );
+    }
+
+    pub fn bulkWrite(
+        self: Collection,
+        operations: anytype,
+        options: BulkWriteOptions,
+    ) !BulkWriteResult {
+        return bulk_ops.execute(self, operations, options);
     }
 
     pub fn insertOne(
