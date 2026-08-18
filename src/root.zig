@@ -15,6 +15,8 @@ pub const ExplainVerbosity = @import("mongo/explain.zig").Verbosity;
 pub const explainFind = @import("mongo/explain.zig").explainFind;
 pub const createCollection = @import("mongo/collection_admin.zig").createCollection;
 pub const dropCollection = @import("mongo/collection_admin.zig").dropCollection;
+pub const ListCollectionsCursor = @import("mongo/list_collections.zig").Cursor;
+pub const listCollections = @import("mongo/list_collections.zig").listCollections;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -55,6 +57,8 @@ pub const mongo = struct {
     pub const explainFind = @import("mongo/explain.zig").explainFind;
     pub const createCollection = @import("mongo/collection_admin.zig").createCollection;
     pub const dropCollection = @import("mongo/collection_admin.zig").dropCollection;
+    pub const ListCollectionsCursor = @import("mongo/list_collections.zig").Cursor;
+    pub const listCollections = @import("mongo/list_collections.zig").listCollections;
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -105,4 +109,5 @@ test {
     _ = @import("mongo/explain.zig");
     _ = @import("mongo/command_response.zig");
     _ = @import("mongo/collection_admin.zig");
+    _ = @import("mongo/list_collections.zig");
 }
