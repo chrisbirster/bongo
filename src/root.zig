@@ -12,6 +12,8 @@ pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdate
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
 pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOptions;
 pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
+pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
+pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
 pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
 pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -32,6 +34,8 @@ pub const mongo = struct {
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
     pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOptions;
     pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
+    pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
+    pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
     pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
     pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -53,4 +57,5 @@ test {
     _ = @import("mongo/find_and_modify.zig");
     _ = @import("mongo/count.zig");
     _ = @import("mongo/distinct.zig");
+    _ = @import("mongo/bulk.zig");
 }
