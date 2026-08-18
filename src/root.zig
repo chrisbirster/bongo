@@ -5,6 +5,8 @@ pub const mongo = struct {
     pub const op_msg = @import("mongo/op_msg.zig");
     pub const Connection =
         @import("mongo/connection.zig").Connection;
+    pub const authenticate =
+        @import("mongo/auth.zig").authenticate;
 };
 
 test {
@@ -15,4 +17,5 @@ test {
     _ = @import("mongo/scram_final.zig");
     _ = @import("mongo/scram_server.zig");
     _ = @import("mongo/sasl.zig");
+    _ = @import("mongo/auth.zig");
 }

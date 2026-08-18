@@ -2,11 +2,9 @@
 
 MongoDB uses SCRAM-SHA-256 to let a client prove it knows a user's password without sending the password itself to the server.
 
-Bongo implements the conversation in small steps so the exact bytes used by SCRAM stay explicit and testable.
+Bongo keeps the protocol bytes explicit so the authentication transcript and cryptographic inputs remain testable.
 
-## Key derivation pipeline
-
-After the server sends its Base64-encoded salt and iteration count, Bongo decodes the salt and derives the client-side keys used to build the authentication proof.
+## Key derivation
 
 ```text
 prepared password
@@ -21,65 +19,47 @@ PBKDF2-HMAC-SHA-256
        ▼
 SaltedPassword
        │
-       ▼
-HMAC-SHA-256("Client Key")
-       │
-       ▼
-ClientKey
-       │
-       ▼
-SHA-256
-       │
-       ▼
-StoredKey
+       ├──────────────────────────────┐
+       ▼                              ▼
+HMAC("Client Key")             HMAC("Server Key")
+       │                              │
+       ▼                              ▼
+ClientKey                       ServerKey
+       │                              │
+       ▼                              │
+SHA-256                              │
+       │                              │
+       ▼                              │
+StoredKey                            │
 ```
 
-The current BONGO-0001 implementation reaches the complete SCRAM `client-final` message.
+MongoDB requires at least 4096 SCRAM iterations. Bongo rejects smaller values.
 
-## SaltedPassword
+SCRAM-SHA-256 requires SASLprep for passwords. The current application-level authentication helper accepts ASCII passwords that pass through SASLprep unchanged and returns `UnsupportedPasswordPreparation` for non-ASCII input rather than deriving credentials from incorrectly prepared bytes.
+
+Usernames are not SASLprep-normalized. SCRAM escaping still replaces `,` with `=2C` and `=` with `=3D` in the client-first message.
+
+## Authentication transcript
+
+The client-first message begins with the GS2 header `n,,`:
 
 ```text
-SaltedPassword = PBKDF2-HMAC-SHA-256(
-    prepared_password,
-    salt,
-    iterations
-)
+n,,n=<escaped username>,r=<client nonce>
 ```
 
-The server sends the salt as Base64 text. Bongo decodes that text before passing the raw salt bytes into PBKDF2.
-
-MongoDB requires at least 4096 SCRAM iterations, so Bongo rejects smaller values at the protocol boundary.
-
-Password preparation is intentionally separate from `saltedPassword()`. The helper expects a password that already satisfies the SCRAM-SHA-256 password preparation rules.
-
-## ClientKey
+MongoDB responds with a server-first message containing the combined nonce, Base64 salt, and iteration count:
 
 ```text
-ClientKey = HMAC-SHA-256(
-    SaltedPassword,
-    "Client Key"
-)
+r=<combined nonce>,s=<Base64 salt>,i=<iterations>
 ```
 
-`"Client Key"` is literal protocol text. It is not a label chosen by Bongo.
-
-The ClientKey is later combined with the ClientSignature to produce the proof sent to MongoDB.
-
-## StoredKey
+With channel binding disabled, the client-final-message-without-proof is:
 
 ```text
-StoredKey = SHA-256(ClientKey)
+c=biws,r=<combined nonce>
 ```
 
-The StoredKey is a one-way hash of the ClientKey. SCRAM uses it to calculate the ClientSignature.
-
-Bongo does not send the StoredKey or ClientKey directly to MongoDB.
-
-## AuthMessage
-
-SCRAM signs the exact authentication transcript rather than a parsed or normalized representation of it.
-
-RFC 5802 defines the AuthMessage as:
+SCRAM signs the exact original transcript bytes:
 
 ```text
 AuthMessage =
@@ -90,106 +70,125 @@ AuthMessage =
     client-final-message-without-proof
 ```
 
-For the SCRAM-SHA-256 example from RFC 7677, the three pieces are:
+Bongo does not parse and regenerate those three transcript parts before signing them.
+
+## Client proof
 
 ```text
-client-first-message-bare:
-n=user,r=rOprNGfwEbeRWgbNEkqO
-
-server-first-message:
-r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096
-
-client-final-message-without-proof:
-c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0
+ClientSignature = HMAC-SHA-256(StoredKey, AuthMessage)
+ClientProof     = ClientKey XOR ClientSignature
 ```
 
-Bongo's `authMessage()` helper joins those original byte sequences with commas. It does not parse, reorder, normalize, or regenerate the fields. This matters because even semantically equivalent text would produce a different HMAC if the bytes changed.
-
-The resulting AuthMessage becomes the message input to both the client and server signature calculations.
-
-## ClientSignature
-
-```text
-ClientSignature = HMAC-SHA-256(
-    StoredKey,
-    AuthMessage
-)
-```
-
-The StoredKey is the HMAC key and the exact AuthMessage transcript is the HMAC message.
-
-The ClientSignature is not sent directly to MongoDB. It is combined with the ClientKey to produce the ClientProof.
-
-## ClientProof
-
-```text
-ClientProof = ClientKey XOR ClientSignature
-```
-
-Bongo XORs the two fixed 32-byte values byte by byte. The result is another 32-byte value.
-
-For the RFC 7677 SCRAM-SHA-256 example, Base64-encoding that ClientProof produces:
-
-```text
-dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
-```
-
-That matches the `p=` value in RFC 7677's client-final message.
-
-## Client-final message
-
-With channel binding disabled, the client-final-message-without-proof is:
-
-```text
-c=biws,r=<combined nonce>
-```
-
-`biws` is the Base64 encoding of the GS2 header `n,,`.
-
-Bongo Base64-encodes the 32-byte ClientProof and appends it as the `p` attribute:
+The 32-byte ClientProof is Base64-encoded and appended to the client-final message:
 
 ```text
 c=biws,r=<combined nonce>,p=<Base64 ClientProof>
 ```
 
-For the RFC 7677 conversation, the complete message is:
+For the RFC 7677 `user` / `pencil` example, the proof is:
 
 ```text
-c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
+dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
 ```
 
-## SCRAM conversation
+## Server verification
 
-At a high level, authentication looks like this:
+Bongo also proves that the server knows the password-derived secret:
+
+```text
+ServerKey       = HMAC-SHA-256(SaltedPassword, "Server Key")
+ServerSignature = HMAC-SHA-256(ServerKey, AuthMessage)
+```
+
+MongoDB sends the verifier as:
+
+```text
+v=<Base64 ServerSignature>
+```
+
+Bongo Base64-decodes the verifier and compares the fixed 32-byte signatures with Zig's constant-time cryptographic comparison helper. A server-final `e=` attribute is treated as an authentication failure.
+
+For the RFC 7677 example, the verifier is:
+
+```text
+6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=
+```
+
+## MongoDB SASL transport
+
+SCRAM messages are carried in MongoDB commands as BSON binary subtype 0 payloads.
+
+The first command is:
+
+```text
+{
+  saslStart: 1,
+  mechanism: "SCRAM-SHA-256",
+  payload: BinData(0, <client-first>),
+  options: { skipEmptyExchange: true },
+  $db: <authentication database>
+}
+```
+
+Bongo remembers the returned `conversationId` and sends the client-final message with:
+
+```text
+{
+  saslContinue: 1,
+  conversationId: <conversationId>,
+  payload: BinData(0, <client-final>),
+  $db: <authentication database>
+}
+```
+
+Authentication completes when MongoDB returns `done: true` after the verified server-final payload. Older servers that do not honor `skipEmptyExchange` receive one final empty `saslContinue` exchange.
+
+## Application API
+
+Authentication operates on the same TCP connection that will be used for MongoDB commands:
+
+```zig
+var connection = try bongo.mongo.Connection.connect(
+    io,
+    "127.0.0.1",
+    27017,
+);
+defer connection.deinit();
+
+try bongo.mongo.authenticate(
+    &connection,
+    allocator,
+    "admin",
+    "admin",
+    "secretpassword",
+);
+```
+
+After `authenticate()` returns successfully, later commands sent through that connection use the authenticated MongoDB session.
+
+## Conversation overview
 
 ```text
 Bongo                                      MongoDB
   │                                           │
-  │ client-first                              │
+  │ saslStart(client-first)                   │
   │──────────────────────────────────────────>│
   │                                           │
-  │                 server-first              │
+  │        server-first + conversationId      │
   │<──────────────────────────────────────────│
   │                                           │
-  │ derive SaltedPassword                     │
-  │ derive ClientKey                          │
-  │ derive StoredKey                          │
-  │ build AuthMessage                         │
-  │ derive ClientSignature                    │
-  │ derive ClientProof                        │
-  │ build client-final                        │
+  │ derive keys / AuthMessage / ClientProof   │
   │                                           │
-  │ client-final                              │
+  │ saslContinue(client-final)                │
   │──────────────────────────────────────────>│
   │                                           │
   │                 server-final              │
   │<──────────────────────────────────────────│
   │                                           │
-  │ verify server signature                   │
+  │ constant-time server verifier check       │
   │                                           │
+  │ authenticated                             │
 ```
-
-MongoDB carries this SCRAM exchange inside the `saslStart` and `saslContinue` commands.
 
 ## References
 
