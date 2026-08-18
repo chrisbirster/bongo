@@ -13,6 +13,7 @@ pub const AggregateCursor = @import("mongo/aggregate.zig").Cursor;
 pub const aggregate = @import("mongo/aggregate.zig").aggregate;
 pub const ExplainVerbosity = @import("mongo/explain.zig").Verbosity;
 pub const explainFind = @import("mongo/explain.zig").explainFind;
+pub const createCollection = @import("mongo/collection_admin.zig").createCollection;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -51,6 +52,7 @@ pub const mongo = struct {
     pub const aggregate = @import("mongo/aggregate.zig").aggregate;
     pub const ExplainVerbosity = @import("mongo/explain.zig").Verbosity;
     pub const explainFind = @import("mongo/explain.zig").explainFind;
+    pub const createCollection = @import("mongo/collection_admin.zig").createCollection;
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -99,4 +101,6 @@ test {
     _ = @import("mongo/find_options.zig");
     _ = @import("mongo/aggregate.zig");
     _ = @import("mongo/explain.zig");
+    _ = @import("mongo/command_response.zig");
+    _ = @import("mongo/collection_admin.zig");
 }
