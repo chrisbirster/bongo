@@ -234,6 +234,28 @@ pub fn storedKey(
     return result;
 }
 
+/// Build the exact SCRAM transcript used by client and server signatures.
+///
+/// RFC 5802 defines this as the three original transcript parts joined by
+/// commas. Callers must pass the exact bytes used in the conversation rather
+/// than reconstructed or normalized values.
+pub fn authMessage(
+    allocator: Allocator,
+    client_first_bare: []const u8,
+    server_first_message: []const u8,
+    client_final_without_proof: []const u8,
+) Allocator.Error![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s},{s},{s}",
+        .{
+            client_first_bare,
+            server_first_message,
+            client_final_without_proof,
+        },
+    );
+}
+
 test "SCRAM salt decodes from Base64" {
     const salt = try decodeSalt(
         std.testing.allocator,
@@ -341,6 +363,21 @@ test "SCRAM stored key matches SHA-256 conversation" {
         u8,
         &expected,
         &result,
+    );
+}
+
+test "SCRAM auth message matches SHA-256 conversation" {
+    const message = try authMessage(
+        std.testing.allocator,
+        "n=user,r=rOprNGfwEbeRWgbNEkqO",
+        "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096",
+        "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0",
+    );
+    defer std.testing.allocator.free(message);
+
+    try std.testing.expectEqualStrings(
+        "n=user,r=rOprNGfwEbeRWgbNEkqO,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0",
+        message,
     );
 }
 
