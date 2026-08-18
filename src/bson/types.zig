@@ -78,6 +78,10 @@ pub const BinarySubtype = enum(u8) {
 
     _,
 
+    pub const Error = error{
+        InvalidUserDefinedValue,
+    };
+
     pub fn byte(subtype: BinarySubtype) u8 {
         return @intFromEnum(subtype);
     }
@@ -86,8 +90,8 @@ pub const BinarySubtype = enum(u8) {
         return @enumFromInt(byte_value);
     }
 
-    pub fn userDefined(value: u8) BinarySubtype {
-        std.debug.assert(value >= 0x80);
+    pub fn userDefined(value: u8) Error!BinarySubtype {
+        if (value < 0x80) return error.InvalidUserDefinedValue;
         return @enumFromInt(value);
     }
 };
@@ -99,6 +103,13 @@ pub const DateTime = struct {
 pub const Decimal128 = struct {
     bytes: [16]u8,
 };
+
+comptime {
+    std.debug.assert(@sizeOf(Type) == 1);
+    std.debug.assert(@sizeOf(BinarySubtype) == 1);
+    std.debug.assert(@sizeOf(ObjectId) == 12);
+    std.debug.assert(@sizeOf(Decimal128) == 16);
+}
 
 pub const Undefined = struct {};
 pub const Null = struct {};
@@ -243,21 +254,19 @@ test Type {
 }
 
 test BinarySubtype {
-    const subtype =
-        BinarySubtype.userDefined(0x80);
+    const minimum = try BinarySubtype.userDefined(0x80);
+    try std.testing.expectEqual(@as(u8, 0x80), minimum.byte());
 
-    try std.testing.expectEqual(
-        @as(u8, 0x80),
-        subtype.byte(),
+    const maximum = try BinarySubtype.userDefined(0xFF);
+    try std.testing.expectEqual(@as(u8, 0xFF), maximum.byte());
+
+    try std.testing.expectError(
+        error.InvalidUserDefinedValue,
+        BinarySubtype.userDefined(0x7F),
     );
 
-    const unknown =
-        BinarySubtype.fromByte(0x42);
-
-    try std.testing.expectEqual(
-        @as(u8, 0x42),
-        unknown.byte(),
-    );
+    const unknown = BinarySubtype.fromByte(0x42);
+    try std.testing.expectEqual(@as(u8, 0x42), unknown.byte());
 }
 
 test "regex options are canonical" {
