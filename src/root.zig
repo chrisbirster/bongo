@@ -18,6 +18,9 @@ pub const WriteConcern = @import("mongo/client.zig").WriteConcern;
 pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
 pub const ReadConcern = @import("mongo/client.zig").ReadConcern;
 pub const ReadConcernLevel = @import("mongo/client.zig").ReadConcernLevel;
+pub const ReadPreference = @import("mongo/read_preference.zig").ReadPreference;
+pub const ReadPreferenceMode = @import("mongo/read_preference.zig").Mode;
+pub const ReadPreferenceTagSet = @import("mongo/read_preference.zig").TagSet;
 pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
 pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -47,6 +50,9 @@ pub const mongo = struct {
     pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
     pub const ReadConcern = @import("mongo/client.zig").ReadConcern;
     pub const ReadConcernLevel = @import("mongo/client.zig").ReadConcernLevel;
+    pub const ReadPreference = @import("mongo/read_preference.zig").ReadPreference;
+    pub const ReadPreferenceMode = @import("mongo/read_preference.zig").Mode;
+    pub const ReadPreferenceTagSet = @import("mongo/read_preference.zig").TagSet;
     pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
     pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -76,4 +82,5 @@ test {
     _ = @import("mongo/write_command.zig");
     _ = @import("mongo/read_concern.zig");
     _ = @import("mongo/read_command.zig");
+    _ = @import("mongo/read_preference.zig");
 }
