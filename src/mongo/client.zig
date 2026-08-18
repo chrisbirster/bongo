@@ -9,6 +9,8 @@ const distinct_ops = @import("distinct.zig");
 const find_and_modify = @import("find_and_modify.zig");
 const op_msg = @import("op_msg.zig");
 const replacement_ops = @import("replacement.zig");
+const write_command = @import("write_command.zig");
+const write_concern = @import("write_concern.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -20,6 +22,8 @@ pub const CountDocumentsOptions = count_ops.Options;
 pub const DistinctResult = distinct_ops.Result;
 pub const BulkWriteOptions = bulk_ops.Options;
 pub const BulkWriteResult = bulk_ops.Result;
+pub const WriteConcern = write_concern.WriteConcern;
+pub const WriteConcernW = write_concern.W;
 
 pub const UpdateOptions = struct {
     upsert: bool = false,
@@ -51,6 +55,7 @@ pub const Client = struct {
     allocator: Allocator,
     connection: Connection,
     next_request_id: i32,
+    write_concern: ?WriteConcern,
 
     pub const Options = struct {
         username: []const u8,
@@ -58,6 +63,7 @@ pub const Client = struct {
         host: []const u8 = "127.0.0.1",
         port: u16 = 27017,
         auth_database: []const u8 = "admin",
+        write_concern: ?WriteConcern = null,
     };
 
     pub fn connect(
@@ -84,6 +90,7 @@ pub const Client = struct {
             .allocator = allocator,
             .connection = connection,
             .next_request_id = 1,
+            .write_concern = options.write_concern,
         };
     }
 
@@ -189,15 +196,27 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try find_and_modify.encodeUpdate(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            update_document,
-            options.return_document,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeFindAndModifyUpdate(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                update_document,
+                options.return_document,
+                concern,
+            )
+        else
+            try find_and_modify.encodeUpdate(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                update_document,
+                options.return_document,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -227,15 +246,27 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try find_and_modify.encodeReplace(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            replacement,
-            options.return_document,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeFindAndModifyReplace(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                replacement,
+                options.return_document,
+                concern,
+            )
+        else
+            try find_and_modify.encodeReplace(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                replacement,
+                options.return_document,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -263,13 +294,23 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try find_and_modify.encodeDelete(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeFindAndModifyDelete(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                concern,
+            )
+        else
+            try find_and_modify.encodeDelete(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -386,13 +427,23 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeInsertOne(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            document,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeInsertOne(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                document,
+                concern,
+            )
+        else
+            try crud.encodeInsertOne(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                document,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -415,14 +466,25 @@ pub const Client = struct {
         if (documents.len == 0) return error.EmptyDocuments;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeInsert(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            documents,
-            true,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeInsert(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                documents,
+                true,
+                concern,
+            )
+        else
+            try crud.encodeInsert(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                documents,
+                true,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -530,15 +592,27 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try replacement_ops.encodeReplaceOneWithOptions(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            replacement,
-            options.upsert,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeReplaceOne(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                replacement,
+                options.upsert,
+                concern,
+            )
+        else
+            try replacement_ops.encodeReplaceOneWithOptions(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                replacement,
+                options.upsert,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -567,16 +641,29 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeUpdate(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            update_document,
-            multi,
-            upsert,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeUpdate(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                update_document,
+                multi,
+                upsert,
+                concern,
+            )
+        else
+            try crud.encodeUpdate(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                update_document,
+                multi,
+                upsert,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(
@@ -621,14 +708,25 @@ pub const Client = struct {
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeDelete(
-            self.allocator,
-            request_id,
-            database_name,
-            collection_name,
-            filter,
-            limit,
-        );
+        const request = if (self.write_concern) |concern|
+            try write_command.encodeDelete(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                limit,
+                concern,
+            )
+        else
+            try crud.encodeDelete(
+                self.allocator,
+                request_id,
+                database_name,
+                collection_name,
+                filter,
+                limit,
+            );
         defer self.allocator.free(request);
 
         const response = try self.connection.request(

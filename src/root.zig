@@ -14,6 +14,8 @@ pub const CountDocumentsOptions = @import("mongo/client.zig").CountDocumentsOpti
 pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
 pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
 pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
+pub const WriteConcern = @import("mongo/client.zig").WriteConcern;
+pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
 pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
 pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -39,6 +41,8 @@ pub const mongo = struct {
     pub const DistinctResult = @import("mongo/client.zig").DistinctResult;
     pub const BulkWriteOptions = @import("mongo/client.zig").BulkWriteOptions;
     pub const BulkWriteResult = @import("mongo/client.zig").BulkWriteResult;
+    pub const WriteConcern = @import("mongo/client.zig").WriteConcern;
+    pub const WriteConcernW = @import("mongo/client.zig").WriteConcernW;
     pub const UpdateOptions = @import("mongo/client.zig").UpdateOptions;
     pub const ReplaceOneOptions = @import("mongo/client.zig").ReplaceOneOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
@@ -64,4 +68,6 @@ test {
     _ = @import("mongo/count.zig");
     _ = @import("mongo/distinct.zig");
     _ = @import("mongo/bulk.zig");
+    _ = @import("mongo/write_concern.zig");
+    _ = @import("mongo/write_command.zig");
 }
