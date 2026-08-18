@@ -40,82 +40,82 @@ pub fn execute(
 
         if (@hasField(T, "insert_one")) {
             const model = operation.insert_one;
-            const write_result = collection.insertOne(model.document) catch |err| {
+            if (collection.insertOne(model.document)) |write_result| {
+                result.inserted_count += write_result.inserted_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.inserted_count += write_result.inserted_count;
+            }
         } else if (@hasField(T, "update_one")) {
             const model = operation.update_one;
-            const write_result = collection.updateOne(
+            if (collection.updateOne(
                 model.filter,
                 model.update,
-            ) catch |err| {
+            )) |write_result| {
+                result.matched_count += write_result.matched_count;
+                result.modified_count += write_result.modified_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.matched_count += write_result.matched_count;
-            result.modified_count += write_result.modified_count;
+            }
         } else if (@hasField(T, "update_many")) {
             const model = operation.update_many;
-            const write_result = collection.updateMany(
+            if (collection.updateMany(
                 model.filter,
                 model.update,
-            ) catch |err| {
+            )) |write_result| {
+                result.matched_count += write_result.matched_count;
+                result.modified_count += write_result.modified_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.matched_count += write_result.matched_count;
-            result.modified_count += write_result.modified_count;
+            }
         } else if (@hasField(T, "replace_one")) {
             const model = operation.replace_one;
-            const write_result = collection.replaceOne(
+            if (collection.replaceOne(
                 model.filter,
                 model.replacement,
-            ) catch |err| {
+            )) |write_result| {
+                result.matched_count += write_result.matched_count;
+                result.modified_count += write_result.modified_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.matched_count += write_result.matched_count;
-            result.modified_count += write_result.modified_count;
+            }
         } else if (@hasField(T, "delete_one")) {
             const model = operation.delete_one;
-            const write_result = collection.deleteOne(model.filter) catch |err| {
+            if (collection.deleteOne(model.filter)) |write_result| {
+                result.deleted_count += write_result.deleted_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.deleted_count += write_result.deleted_count;
+            }
         } else if (@hasField(T, "delete_many")) {
             const model = operation.delete_many;
-            const write_result = collection.deleteMany(model.filter) catch |err| {
+            if (collection.deleteMany(model.filter)) |write_result| {
+                result.deleted_count += write_result.deleted_count;
+            } else |err| {
                 if (!recordWriteError(&result, index, err)) return err;
                 if (options.ordered) {
                     result.stopped_early = true;
                     return result;
                 }
-                continue;
-            };
-            result.deleted_count += write_result.deleted_count;
+            }
         } else {
             return error.UnsupportedBulkOperation;
         }
@@ -171,4 +171,40 @@ test "bulk result does not classify protocol errors as write errors" {
         error.CommandFailed,
     ));
     try std.testing.expectEqual(@as(usize, 0), result.error_count);
+}
+
+test "unordered bulk execution continues after a runtime write error" {
+    const FakeCollection = struct {
+        const InsertResult = struct {
+            inserted_count: i64,
+        };
+
+        calls: usize = 0,
+
+        pub fn insertOne(
+            self: *@This(),
+            document: anytype,
+        ) !InsertResult {
+            _ = document;
+            self.calls += 1;
+            if (self.calls == 1) return error.WriteFailed;
+            return .{ .inserted_count = 1 };
+        }
+    };
+
+    var collection = FakeCollection{};
+    const result = try execute(
+        &collection,
+        .{
+            .{ .insert_one = .{ .document = .{ .value = @as(i32, 1) } } },
+            .{ .insert_one = .{ .document = .{ .value = @as(i32, 2) } } },
+        },
+        .{ .ordered = false },
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), collection.calls);
+    try std.testing.expectEqual(@as(i64, 1), result.inserted_count);
+    try std.testing.expectEqual(@as(usize, 1), result.error_count);
+    try std.testing.expectEqual(@as(?usize, 0), result.first_error_index);
+    try std.testing.expect(!result.stopped_early);
 }

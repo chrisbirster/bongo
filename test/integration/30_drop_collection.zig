@@ -27,8 +27,15 @@ test "30 - dropCollection removes an explicitly created collection" {
     _ = try events.insertOne(.{ .name = "Bongo" });
 
     try bongo.dropCollection(events);
-    try std.testing.expectError(
-        error.CommandFailed,
-        bongo.dropCollection(events),
+
+    var collections = try bongo.listCollections(
+        database,
+        .{ .filter = .{ .name = "events" } },
     );
+    defer collections.deinit();
+
+    try std.testing.expect((try collections.next()) == null);
+
+    // MongoDB treats dropping an already-absent collection as success.
+    try bongo.dropCollection(events);
 }
