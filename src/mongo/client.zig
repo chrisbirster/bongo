@@ -3,11 +3,15 @@ const bson = @import("../bson.zig");
 const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
 const crud = @import("crud.zig");
+const find_and_modify = @import("find_and_modify.zig");
 const op_msg = @import("op_msg.zig");
 const replacement_ops = @import("replacement.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+
+pub const ReturnDocument = find_and_modify.ReturnDocument;
+pub const FindOneAndUpdateOptions = find_and_modify.UpdateOptions;
 
 pub const Error = error{
     EmptyDatabase,
@@ -150,6 +154,47 @@ pub const Client = struct {
 
         const document = (try cursor.next()) orelse return null;
         const bytes = try self.allocator.dupe(u8, document);
+
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
+    }
+
+    pub fn findOneAndUpdate(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update_document: anytype,
+        options: FindOneAndUpdateOptions,
+    ) !?OwnedDocument {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try find_and_modify.encodeUpdate(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+            update_document,
+            options.return_document,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        const bytes = (try find_and_modify.parseDocumentResponse(
+            self.allocator,
+            response,
+            request_id,
+        )) orelse return null;
 
         return .{
             .allocator = self.allocator,
@@ -471,6 +516,21 @@ pub const Collection = struct {
 
     pub fn findOne(self: Collection, filter: anytype) !?OwnedDocument {
         return self.client.findOne(self.database_name, self.name, filter);
+    }
+
+    pub fn findOneAndUpdate(
+        self: Collection,
+        filter: anytype,
+        update_document: anytype,
+        options: FindOneAndUpdateOptions,
+    ) !?OwnedDocument {
+        return self.client.findOneAndUpdate(
+            self.database_name,
+            self.name,
+            filter,
+            update_document,
+            options,
+        );
     }
 
     pub fn insertOne(
