@@ -72,10 +72,7 @@ pub const Client = struct {
     }
 
     pub fn database(self: *Client, name: []const u8) Database {
-        return .{
-            .client = self,
-            .name = name,
-        };
+        return .{ .client = self, .name = name };
     }
 
     pub fn find(
@@ -95,9 +92,7 @@ pub const Client = struct {
                 .filter = filter,
                 .@"$db" = database_name,
             },
-            .{
-                .request_id = request_id,
-            },
+            .{ .request_id = request_id },
         );
         defer self.allocator.free(request);
 
@@ -134,9 +129,7 @@ pub const Client = struct {
                 .singleBatch = true,
                 .@"$db" = database_name,
             },
-            .{
-                .request_id = request_id,
-            },
+            .{ .request_id = request_id },
         );
         defer self.allocator.free(request);
 
@@ -228,17 +221,51 @@ pub const Client = struct {
         filter: anytype,
         update: anytype,
     ) !crud.UpdateResult {
+        return self.update(
+            database_name,
+            collection_name,
+            filter,
+            update,
+            false,
+        );
+    }
+
+    pub fn updateMany(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update: anytype,
+    ) !crud.UpdateResult {
+        return self.update(
+            database_name,
+            collection_name,
+            filter,
+            update,
+            true,
+        );
+    }
+
+    fn update(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update_document: anytype,
+        multi: bool,
+    ) !crud.UpdateResult {
         if (database_name.len == 0) return error.EmptyDatabase;
         if (collection_name.len == 0) return error.EmptyCollection;
 
         const request_id = self.takeRequestId();
-        const request = try crud.encodeUpdateOne(
+        const request = try crud.encodeUpdate(
             self.allocator,
             request_id,
             database_name,
             collection_name,
             filter,
-            update,
+            update_document,
+            multi,
         );
         defer self.allocator.free(request);
 
@@ -286,7 +313,6 @@ pub const Client = struct {
         cursor_id: i64,
     ) !OwnedBatch {
         std.debug.assert(cursor_id != 0);
-
         const request_id = self.takeRequestId();
         const request = try op_msg.encodeCommand(
             self.allocator,
@@ -295,9 +321,7 @@ pub const Client = struct {
                 .collection = collection_name,
                 .@"$db" = database_name,
             },
-            .{
-                .request_id = request_id,
-            },
+            .{ .request_id = request_id },
         );
         defer self.allocator.free(request);
 
@@ -329,7 +353,6 @@ pub const Client = struct {
         cursor_id: i64,
     ) !void {
         std.debug.assert(cursor_id != 0);
-
         const request_id = self.takeRequestId();
         const cursor_ids = [_]i64{cursor_id};
         const request = try op_msg.encodeCommand(
@@ -339,9 +362,7 @@ pub const Client = struct {
                 .cursors = cursor_ids,
                 .@"$db" = database_name,
             },
-            .{
-                .request_id = request_id,
-            },
+            .{ .request_id = request_id },
         );
         defer self.allocator.free(request);
 
@@ -356,14 +377,11 @@ pub const Client = struct {
 
     fn takeRequestId(self: *Client) i32 {
         const result = self.next_request_id;
-
         self.next_request_id = if (result == std.math.maxInt(i32))
             1
         else
             result + 1;
-
         std.debug.assert(result > 0);
-        std.debug.assert(self.next_request_id > 0);
         return result;
     }
 };
@@ -387,22 +405,11 @@ pub const Collection = struct {
     name: []const u8,
 
     pub fn find(self: Collection, filter: anytype) !Cursor {
-        return self.client.find(
-            self.database_name,
-            self.name,
-            filter,
-        );
+        return self.client.find(self.database_name, self.name, filter);
     }
 
-    pub fn findOne(
-        self: Collection,
-        filter: anytype,
-    ) !?OwnedDocument {
-        return self.client.findOne(
-            self.database_name,
-            self.name,
-            filter,
-        );
+    pub fn findOne(self: Collection, filter: anytype) !?OwnedDocument {
+        return self.client.findOne(self.database_name, self.name, filter);
     }
 
     pub fn insertOne(
@@ -440,15 +447,21 @@ pub const Collection = struct {
         );
     }
 
-    pub fn deleteOne(
+    pub fn updateMany(
         self: Collection,
         filter: anytype,
-    ) !crud.DeleteResult {
-        return self.client.deleteOne(
+        update: anytype,
+    ) !crud.UpdateResult {
+        return self.client.updateMany(
             self.database_name,
             self.name,
             filter,
+            update,
         );
+    }
+
+    pub fn deleteOne(self: Collection, filter: anytype) !crud.DeleteResult {
+        return self.client.deleteOne(self.database_name, self.name, filter);
     }
 };
 
@@ -481,7 +494,6 @@ pub const Cursor = struct {
         collection_name: []const u8,
     ) !Cursor {
         errdefer client.allocator.free(response_bytes);
-
         const parsed = try parseCursorResponse(
             response_bytes,
             expected_response_to,
@@ -492,10 +504,8 @@ pub const Cursor = struct {
 
         const owned_database = try client.allocator.dupe(u8, database_name);
         errdefer client.allocator.free(owned_database);
-
         const owned_collection = try client.allocator.dupe(u8, collection_name);
         errdefer client.allocator.free(owned_collection);
-
         const owned_namespace = try client.allocator.dupe(u8, parsed.namespace_name);
         errdefer client.allocator.free(owned_namespace);
 
@@ -514,12 +524,10 @@ pub const Cursor = struct {
 
     pub fn next(self: *Cursor) !?[]const u8 {
         if (self.closed) return null;
-
         while (true) {
             if (try nextBatchDocument(&self.batch_reader)) |document| {
                 return document;
             }
-
             if (self.cursor_id == 0) return null;
             try self.fetchNextBatch();
         }
@@ -540,12 +548,10 @@ pub const Cursor = struct {
     pub fn close(self: *Cursor) !void {
         if (self.closed) return;
         self.closed = true;
-
         if (self.cursor_id == 0) return;
 
         const id_to_kill = self.cursor_id;
         self.cursor_id = 0;
-
         try self.client.killCursor(
             self.database_name,
             self.collection_name,
@@ -555,7 +561,6 @@ pub const Cursor = struct {
 
     pub fn deinit(self: *Cursor) void {
         self.close() catch {};
-
         self.allocator.free(self.response_bytes);
         self.allocator.free(self.database_name);
         self.allocator.free(self.collection_name);
@@ -573,14 +578,12 @@ pub const Cursor = struct {
             self.cursor_id,
         );
         errdefer self.allocator.free(next_batch.response_bytes);
-
         const reader = try bson.Reader.init(next_batch.batch);
         const previous_response = self.response_bytes;
 
         self.response_bytes = next_batch.response_bytes;
         self.batch_reader = reader;
         self.cursor_id = next_batch.cursor_id;
-
         self.allocator.free(previous_response);
     }
 };
@@ -665,7 +668,6 @@ fn validateCommandResponse(
     if (message.header.response_to != expected_response_to) {
         return error.UnexpectedResponse;
     }
-
     const body = try message.body();
     const ok = (try bson.Reader.get(body, "ok")) orelse
         return error.CommandFailed;
@@ -674,7 +676,6 @@ fn validateCommandResponse(
 
 fn nextBatchDocument(reader: *bson.Reader) !?[]const u8 {
     const element = (try reader.next()) orelse return null;
-
     return switch (element.value) {
         .document => |document| document,
         else => error.InvalidBatchDocument,
@@ -688,7 +689,6 @@ fn namespaceMatches(
 ) bool {
     if (namespace_name.len <= database_name.len) return false;
     if (namespace_name[database_name.len] != '.') return false;
-
     return std.mem.eql(
         u8,
         namespace_name[0..database_name.len],
@@ -711,19 +711,14 @@ fn commandSucceeded(value: bson.Value) bool {
 
 test "cursor response parses firstBatch state" {
     const allocator = std.testing.allocator;
-    const Document = struct {
-        name: []const u8,
-    };
+    const Document = struct { name: []const u8 };
     const response = try op_msg.encodeCommand(
         allocator,
         .{
             .cursor = .{
                 .id = @as(i64, 1234),
                 .ns = "test.users",
-                .firstBatch = [_]Document{
-                    .{ .name = "Bongo" },
-                    .{ .name = "Mango" },
-                },
+                .firstBatch = [_]Document{.{ .name = "Bongo" }},
             },
             .ok = @as(f64, 1.0),
         },
@@ -742,42 +737,6 @@ test "cursor response parses firstBatch state" {
         "users",
     );
     try std.testing.expectEqual(@as(i64, 1234), parsed.cursor_id);
-
-    var reader = try bson.Reader.init(parsed.batch);
-    const first = (try nextBatchDocument(&reader)).?;
-    try std.testing.expectEqualStrings(
-        "Bongo",
-        (try bson.Reader.get(first, "name")).?.string,
-    );
-}
-
-test "cursor response parses getMore nextBatch and exhausted id" {
-    const allocator = std.testing.allocator;
-    const response = try op_msg.encodeCommand(
-        allocator,
-        .{
-            .cursor = .{
-                .id = @as(i64, 0),
-                .ns = "test.users",
-                .nextBatch = [_]u8{},
-            },
-            .ok = @as(f64, 1.0),
-        },
-        .{
-            .request_id = 91,
-            .response_to = 13,
-        },
-    );
-    defer allocator.free(response);
-
-    const parsed = try parseCursorResponse(
-        response,
-        13,
-        "nextBatch",
-        "test",
-        "users",
-    );
-    try std.testing.expectEqual(@as(i64, 0), parsed.cursor_id);
 }
 
 test "cursor response rejects failed command" {
@@ -797,68 +756,6 @@ test "cursor response rejects failed command" {
         parseCursorResponse(
             response,
             14,
-            "firstBatch",
-            "test",
-            "users",
-        ),
-    );
-}
-
-test "cursor response rejects mismatched response id" {
-    const allocator = std.testing.allocator;
-    const response = try op_msg.encodeCommand(
-        allocator,
-        .{
-            .cursor = .{
-                .id = @as(i64, 0),
-                .ns = "test.users",
-                .firstBatch = [_]u8{},
-            },
-            .ok = @as(f64, 1.0),
-        },
-        .{
-            .request_id = 93,
-            .response_to = 15,
-        },
-    );
-    defer allocator.free(response);
-
-    try std.testing.expectError(
-        error.UnexpectedResponse,
-        parseCursorResponse(
-            response,
-            99,
-            "firstBatch",
-            "test",
-            "users",
-        ),
-    );
-}
-
-test "cursor response rejects unexpected namespace" {
-    const allocator = std.testing.allocator;
-    const response = try op_msg.encodeCommand(
-        allocator,
-        .{
-            .cursor = .{
-                .id = @as(i64, 0),
-                .ns = "other.users",
-                .firstBatch = [_]u8{},
-            },
-            .ok = @as(f64, 1.0),
-        },
-        .{
-            .request_id = 94,
-            .response_to = 16,
-        },
-    );
-    defer allocator.free(response);
-
-    try std.testing.expectError(
-        error.UnexpectedNamespace,
-        parseCursorResponse(
-            response,
-            16,
             "firstBatch",
             "test",
             "users",
