@@ -21,4 +21,5 @@ test {
     _ = @import("integration/20_distinct.zig");
     _ = @import("integration/21_bulk_write.zig");
     _ = @import("integration/22_upsert.zig");
+    _ = @import("integration/23_write_concern.zig");
 }
