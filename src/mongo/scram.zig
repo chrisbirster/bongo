@@ -1,6 +1,13 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+const salted_password_length = HmacSha256.mac_length;
+
+comptime {
+    std.debug.assert(salted_password_length == 32);
+    std.debug.assert(salted_password_length == std.crypto.hash.sha2.Sha256.digest_length);
+}
 
 pub const Error = Allocator.Error || error{
     InvalidNonce,
@@ -163,6 +170,32 @@ pub fn decodeSalt(
     return salt;
 }
 
+/// Derive the SCRAM-SHA-256 SaltedPassword with PBKDF2-HMAC-SHA-256.
+///
+/// `prepared_password` must already have the SCRAM-SHA-256 password
+/// preparation rules applied. `salt` must be the raw decoded salt bytes,
+/// not the Base64 text from the server-first message.
+pub fn saltedPassword(
+    prepared_password: []const u8,
+    salt: []const u8,
+    iterations: u32,
+) error{InvalidIterationCount}![salted_password_length]u8 {
+    if (iterations < 4096) return error.InvalidIterationCount;
+
+    var result: [salted_password_length]u8 = undefined;
+
+    std.crypto.pwhash.pbkdf2(
+        &result,
+        prepared_password,
+        salt,
+        iterations,
+        HmacSha256,
+    ) catch unreachable;
+
+    std.debug.assert(result.len == salted_password_length);
+    return result;
+}
+
 test "SCRAM salt decodes from Base64" {
     const salt = try decodeSalt(
         std.testing.allocator,
@@ -183,6 +216,44 @@ test "SCRAM salt rejects invalid Base64" {
         decodeSalt(
             std.testing.allocator,
             "not%%%base64",
+        ),
+    );
+}
+
+test "SCRAM salted password matches MongoDB SHA-256 conversation" {
+    const salt = try decodeSalt(
+        std.testing.allocator,
+        "W22ZaJ0SNY7soEsUEjb6gQ==",
+    );
+    defer std.testing.allocator.free(salt);
+
+    const result = try saltedPassword(
+        "pencil",
+        salt,
+        4096,
+    );
+
+    const expected = [_]u8{
+        0xc4, 0xa4, 0x95, 0x10, 0x32, 0x3a, 0xb4, 0xf9,
+        0x52, 0xca, 0xc1, 0xfa, 0x99, 0x44, 0x19, 0x39,
+        0xe7, 0x8e, 0xa7, 0x4d, 0x6b, 0xe8, 0x1d, 0xdf,
+        0x70, 0x96, 0xe8, 0x75, 0x13, 0xdc, 0x61, 0x5d,
+    };
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &expected,
+        &result,
+    );
+}
+
+test "SCRAM salted password enforces MongoDB iteration minimum" {
+    try std.testing.expectError(
+        error.InvalidIterationCount,
+        saltedPassword(
+            "pencil",
+            "salt",
+            4095,
         ),
     );
 }
