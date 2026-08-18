@@ -23,6 +23,10 @@ pub const UpdateResult = struct {
     modified_count: i64,
 };
 
+pub const DeleteResult = struct {
+    deleted_count: i64,
+};
+
 pub fn encodeInsertOne(
     allocator: Allocator,
     request_id: i32,
@@ -120,6 +124,59 @@ pub fn encodeUpdate(
     );
 }
 
+pub fn encodeDeleteOne(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+) ![]u8 {
+    return encodeDelete(
+        allocator,
+        request_id,
+        database_name,
+        collection_name,
+        filter,
+        1,
+    );
+}
+
+pub fn encodeDelete(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+    limit: i32,
+) ![]u8 {
+    std.debug.assert(limit == 0 or limit == 1);
+
+    const DeleteSpec = struct {
+        q: @TypeOf(filter),
+        limit: i32,
+    };
+
+    const deletes = [_]DeleteSpec{
+        .{
+            .q = filter,
+            .limit = limit,
+        },
+    };
+
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .delete = collection_name,
+            .deletes = &deletes,
+            .ordered = true,
+            .@"$db" = database_name,
+        },
+        .{
+            .request_id = request_id,
+        },
+    );
+}
+
 pub fn parseInsertOneResponse(
     response_bytes: []const u8,
     expected_response_to: i32,
@@ -146,6 +203,20 @@ pub fn parseUpdateResponse(
     return .{
         .matched_count = try requiredCount(body, "n"),
         .modified_count = try requiredCount(body, "nModified"),
+    };
+}
+
+pub fn parseDeleteResponse(
+    response_bytes: []const u8,
+    expected_response_to: i32,
+) !DeleteResult {
+    const body = try validatedWriteBody(
+        response_bytes,
+        expected_response_to,
+    );
+
+    return .{
+        .deleted_count = try requiredCount(body, "n"),
     };
 }
 
@@ -191,7 +262,7 @@ fn requiredCount(
     return switch (value) {
         .int32 => |number| number,
         .int64 => |number| number,
-        else => error.InvalidCount,
+        else => return error.InvalidCount,
     };
 }
 
@@ -361,4 +432,58 @@ test "update response returns matched and modified counts" {
     const result = try parseUpdateResponse(response, 43);
     try std.testing.expectEqual(@as(i64, 1), result.matched_count);
     try std.testing.expectEqual(@as(i64, 1), result.modified_count);
+}
+
+test "deleteOne command encodes filter and limit one" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeDeleteOne(
+        allocator,
+        44,
+        "test",
+        "users",
+        .{ .name = "Bongo" },
+    );
+    defer allocator.free(request);
+
+    const message = try op_msg.decode(request);
+    const body = try message.body();
+
+    try std.testing.expectEqualStrings(
+        "users",
+        (try bson.Reader.get(body, "delete")).?.string,
+    );
+
+    const deletes = (try bson.Reader.get(body, "deletes")).?.array;
+    const spec = (try bson.Reader.get(deletes, "0")).?.document;
+    const query = (try bson.Reader.get(spec, "q")).?.document;
+
+    try std.testing.expectEqualStrings(
+        "Bongo",
+        (try bson.Reader.get(query, "name")).?.string,
+    );
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        (try bson.Reader.get(spec, "limit")).?.int32,
+    );
+}
+
+test "delete response returns deleted count" {
+    const allocator = std.testing.allocator;
+
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .n = @as(i32, 1),
+            .ok = @as(f64, 1.0),
+        },
+        .{
+            .request_id = 93,
+            .response_to = 44,
+        },
+    );
+    defer allocator.free(response);
+
+    const result = try parseDeleteResponse(response, 44);
+    try std.testing.expectEqual(@as(i64, 1), result.deleted_count);
 }

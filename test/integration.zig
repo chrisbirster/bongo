@@ -7,4 +7,5 @@ test {
     _ = @import("integration/06_cursor.zig");
     _ = @import("integration/07_insert_one.zig");
     _ = @import("integration/08_update_one.zig");
+    _ = @import("integration/09_delete_one.zig");
 }
