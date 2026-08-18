@@ -47,6 +47,29 @@ pub fn dropCollection(collection: anytype) !void {
     try command_response.sendVoid(client, request, request_id);
 }
 
+pub fn renameCollection(
+    collection: anytype,
+    new_name: []const u8,
+    drop_target: bool,
+) !void {
+    if (new_name.len == 0) return error.EmptyCollection;
+
+    const client = collection.client;
+    const request_id = command_cursor.takeRequestId(client);
+    const request = try encodeRename(
+        client.allocator,
+        request_id,
+        collection.database_name,
+        collection.name,
+        new_name,
+        drop_target,
+        client.write_concern,
+    );
+    defer client.allocator.free(request);
+
+    try command_response.sendVoid(client, request, request_id);
+}
+
 pub fn encodeCreate(
     allocator: Allocator,
     request_id: i32,
@@ -111,6 +134,57 @@ pub fn encodeDrop(
         .{
             .drop = collection_name,
             .@"$db" = database_name,
+        },
+        .{ .request_id = request_id },
+    );
+}
+
+pub fn encodeRename(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    source_name: []const u8,
+    target_name: []const u8,
+    drop_target: bool,
+    concern: ?write_concern.WriteConcern,
+) ![]u8 {
+    const source_namespace = try std.fmt.allocPrint(
+        allocator,
+        "{s}.{s}",
+        .{ database_name, source_name },
+    );
+    defer allocator.free(source_namespace);
+    const target_namespace = try std.fmt.allocPrint(
+        allocator,
+        "{s}.{s}",
+        .{ database_name, target_name },
+    );
+    defer allocator.free(target_namespace);
+
+    if (concern) |configured| {
+        const concern_document = try write_concern.encode(allocator, configured);
+        defer allocator.free(concern_document);
+
+        return op_msg.encodeCommand(
+            allocator,
+            .{
+                .renameCollection = source_namespace,
+                .to = target_namespace,
+                .dropTarget = drop_target,
+                .writeConcern = bson.Value{ .document = concern_document },
+                .@"$db" = "admin",
+            },
+            .{ .request_id = request_id },
+        );
+    }
+
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .renameCollection = source_namespace,
+            .to = target_namespace,
+            .dropTarget = drop_target,
+            .@"$db" = "admin",
         },
         .{ .request_id = request_id },
     );
@@ -188,5 +262,35 @@ test "dropCollection encodes optional write concern" {
     try std.testing.expectEqualStrings(
         "majority",
         (try bson.Reader.get(concern, "w")).?.string,
+    );
+}
+
+test "renameCollection uses admin and fully qualified namespaces" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeRename(
+        allocator,
+        72,
+        "test",
+        "old_name",
+        "new_name",
+        true,
+        null,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    try std.testing.expectEqualStrings(
+        "test.old_name",
+        (try bson.Reader.get(body, "renameCollection")).?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "test.new_name",
+        (try bson.Reader.get(body, "to")).?.string,
+    );
+    try std.testing.expect((try bson.Reader.get(body, "dropTarget")).?.boolean);
+    try std.testing.expectEqualStrings(
+        "admin",
+        (try bson.Reader.get(body, "$db")).?.string,
     );
 }
