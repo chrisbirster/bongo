@@ -28,11 +28,11 @@ pub fn encodeReplaceOne(
     );
 }
 
-fn validateReplacement(replacement: anytype) Error!void {
+pub fn validateReplacement(replacement: anytype) Error!void {
     const T = @TypeOf(replacement);
 
     if (@typeInfo(T) != .@"struct") {
-        @compileError("replaceOne replacement must be a struct document");
+        @compileError("replacement must be a struct document");
     }
 
     inline for (@typeInfo(T).@"struct".fields) |field| {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const bson = @import("../bson.zig");
 const op_msg = @import("op_msg.zig");
+const replacement_ops = @import("replacement.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -19,6 +20,8 @@ pub const ReturnDocument = enum {
 pub const UpdateOptions = struct {
     return_document: ReturnDocument = .before,
 };
+
+pub const ReplaceOptions = UpdateOptions;
 
 pub fn encodeUpdate(
     allocator: Allocator,
@@ -41,6 +44,28 @@ pub fn encodeUpdate(
         .{
             .request_id = request_id,
         },
+    );
+}
+
+pub fn encodeReplace(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+    replacement: anytype,
+    return_document: ReturnDocument,
+) ![]u8 {
+    try replacement_ops.validateReplacement(replacement);
+
+    return encodeUpdate(
+        allocator,
+        request_id,
+        database_name,
+        collection_name,
+        filter,
+        replacement,
+        return_document,
     );
 }
 
@@ -112,6 +137,43 @@ test "findOneAndUpdate command controls returned document" {
     );
     try std.testing.expect(
         (try bson.Reader.get(after_body, "new")).?.boolean,
+    );
+}
+
+test "findOneAndReplace rejects modifiers and encodes replacement" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeReplace(
+        allocator,
+        50,
+        "test",
+        "users",
+        .{ ._id = "bongo-far" },
+        .{ ._id = "bongo-far", .name = "Mango" },
+        .after,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    const update = (try bson.Reader.get(body, "update")).?.document;
+
+    try std.testing.expectEqualStrings(
+        "Mango",
+        (try bson.Reader.get(update, "name")).?.string,
+    );
+    try std.testing.expect((try bson.Reader.get(body, "new")).?.boolean);
+
+    try std.testing.expectError(
+        error.InvalidReplacement,
+        encodeReplace(
+            allocator,
+            51,
+            "test",
+            "users",
+            .{ ._id = "bongo-far" },
+            .{ .@"$set" = .{ .name = "Mango" } },
+            .before,
+        ),
     );
 }
 

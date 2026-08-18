@@ -12,6 +12,7 @@ const Io = std.Io;
 
 pub const ReturnDocument = find_and_modify.ReturnDocument;
 pub const FindOneAndUpdateOptions = find_and_modify.UpdateOptions;
+pub const FindOneAndReplaceOptions = find_and_modify.ReplaceOptions;
 
 pub const Error = error{
     EmptyDatabase,
@@ -180,6 +181,47 @@ pub const Client = struct {
             collection_name,
             filter,
             update_document,
+            options.return_document,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        const bytes = (try find_and_modify.parseDocumentResponse(
+            self.allocator,
+            response,
+            request_id,
+        )) orelse return null;
+
+        return .{
+            .allocator = self.allocator,
+            .bytes = bytes,
+        };
+    }
+
+    pub fn findOneAndReplace(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        replacement: anytype,
+        options: FindOneAndReplaceOptions,
+    ) !?OwnedDocument {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try find_and_modify.encodeReplace(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+            replacement,
             options.return_document,
         );
         defer self.allocator.free(request);
@@ -529,6 +571,21 @@ pub const Collection = struct {
             self.name,
             filter,
             update_document,
+            options,
+        );
+    }
+
+    pub fn findOneAndReplace(
+        self: Collection,
+        filter: anytype,
+        replacement: anytype,
+        options: FindOneAndReplaceOptions,
+    ) !?OwnedDocument {
+        return self.client.findOneAndReplace(
+            self.database_name,
+            self.name,
+            filter,
+            replacement,
             options,
         );
     }
