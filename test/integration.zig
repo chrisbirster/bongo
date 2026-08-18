@@ -23,4 +23,5 @@ test {
     _ = @import("integration/22_upsert.zig");
     _ = @import("integration/23_write_concern.zig");
     _ = @import("integration/24_read_concern.zig");
+    _ = @import("integration/25_find_options.zig");
 }

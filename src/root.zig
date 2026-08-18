@@ -7,6 +7,8 @@ pub const Collection = @import("mongo/client.zig").Collection;
 pub const Cursor = @import("mongo/client.zig").Cursor;
 pub const FindResult = @import("mongo/client.zig").FindResult;
 pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
+pub const FindOptionsCursor = @import("mongo/find_options.zig").Cursor;
+pub const findWithOptions = @import("mongo/find_options.zig").findWithOptions;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -39,6 +41,8 @@ pub const mongo = struct {
     pub const Cursor = @import("mongo/client.zig").Cursor;
     pub const FindResult = @import("mongo/client.zig").FindResult;
     pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
+    pub const FindOptionsCursor = @import("mongo/find_options.zig").Cursor;
+    pub const findWithOptions = @import("mongo/find_options.zig").findWithOptions;
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -83,4 +87,6 @@ test {
     _ = @import("mongo/read_concern.zig");
     _ = @import("mongo/read_command.zig");
     _ = @import("mongo/read_preference.zig");
+    _ = @import("mongo/command_cursor.zig");
+    _ = @import("mongo/find_options.zig");
 }
