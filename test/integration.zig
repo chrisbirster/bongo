@@ -12,4 +12,5 @@ test {
     _ = @import("integration/11_insert_many.zig");
     _ = @import("integration/12_update_many.zig");
     _ = @import("integration/13_delete_many.zig");
+    _ = @import("integration/14_replace_one.zig");
 }
