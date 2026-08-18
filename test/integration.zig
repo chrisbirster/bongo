@@ -29,4 +29,5 @@ test {
     _ = @import("integration/28_explain.zig");
     _ = @import("integration/29_create_collection.zig");
     _ = @import("integration/30_drop_collection.zig");
+    _ = @import("integration/31_list_collections.zig");
 }
