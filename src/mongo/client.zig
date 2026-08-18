@@ -4,6 +4,7 @@ const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
 const count_ops = @import("count.zig");
 const crud = @import("crud.zig");
+const distinct_ops = @import("distinct.zig");
 const find_and_modify = @import("find_and_modify.zig");
 const op_msg = @import("op_msg.zig");
 const replacement_ops = @import("replacement.zig");
@@ -15,6 +16,7 @@ pub const ReturnDocument = find_and_modify.ReturnDocument;
 pub const FindOneAndUpdateOptions = find_and_modify.UpdateOptions;
 pub const FindOneAndReplaceOptions = find_and_modify.ReplaceOptions;
 pub const CountDocumentsOptions = count_ops.Options;
+pub const DistinctResult = distinct_ops.Result;
 
 pub const Error = error{
     EmptyDatabase,
@@ -199,10 +201,7 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
     }
 
     pub fn findOneAndReplace(
@@ -240,10 +239,7 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
     }
 
     pub fn findOneAndDelete(
@@ -277,10 +273,7 @@ pub const Client = struct {
             request_id,
         )) orelse return null;
 
-        return .{
-            .allocator = self.allocator,
-            .bytes = bytes,
-        };
+        return .{ .allocator = self.allocator, .bytes = bytes };
     }
 
     pub fn countDocuments(
@@ -337,6 +330,39 @@ pub const Client = struct {
         defer self.allocator.free(response);
 
         return count_ops.parseCountResponse(response, request_id);
+    }
+
+    pub fn distinct(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        key: []const u8,
+        filter: anytype,
+    ) !DistinctResult {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try distinct_ops.encode(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            key,
+            filter,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+
+        return distinct_ops.parse(
+            self.allocator,
+            response,
+            request_id,
+        );
     }
 
     pub fn insertOne(
@@ -703,6 +729,19 @@ pub const Collection = struct {
         return self.client.estimatedDocumentCount(
             self.database_name,
             self.name,
+        );
+    }
+
+    pub fn distinct(
+        self: Collection,
+        key: []const u8,
+        filter: anytype,
+    ) !DistinctResult {
+        return self.client.distinct(
+            self.database_name,
+            self.name,
+            key,
+            filter,
         );
     }
 

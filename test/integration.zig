@@ -18,4 +18,5 @@ test {
     _ = @import("integration/17_find_one_and_delete.zig");
     _ = @import("integration/18_count_documents.zig");
     _ = @import("integration/19_estimated_document_count.zig");
+    _ = @import("integration/20_distinct.zig");
 }
