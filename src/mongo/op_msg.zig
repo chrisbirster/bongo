@@ -54,6 +54,15 @@ pub const Header = struct {
     op_code: i32,
 };
 
+comptime {
+    std.debug.assert(header_size == 4 * @sizeOf(i32));
+    std.debug.assert(@sizeOf(Header) == header_size);
+    std.debug.assert(flags_size == @sizeOf(u32));
+    std.debug.assert(fixed_prefix_size == 20);
+    std.debug.assert((known_required_flags & ~required_flag_mask) == 0);
+    std.debug.assert((Flag.exhaust_allowed & required_flag_mask) == 0);
+}
+
 pub const EncodeOptions = struct {
     request_id: i32 = 1,
     response_to: i32 = 0,
@@ -297,6 +306,11 @@ pub fn decode(bytes: []const u8) Error!Message {
 
     // Fully validate sections now and guarantee a kind-0 body exists.
     _ = try message.body();
+
+    std.debug.assert(message.sections_end <= message.bytes.len);
+    std.debug.assert(message.header.message_length > 0);
+    std.debug.assert(@as(usize, @intCast(message.header.message_length)) == message.bytes.len);
+
     return message;
 }
 
@@ -317,39 +331,60 @@ fn appendInt(
     comptime T: type,
     value: T,
 ) !void {
+    const length_before = bytes.items.len;
+
     var buffer: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buffer, value, .little);
     try bytes.appendSlice(allocator, &buffer);
+
+    std.debug.assert(bytes.items.len == length_before + @sizeOf(T));
 }
 
 fn checkedI32Len(len: usize) Error!i32 {
     if (len > std.math.maxInt(i32)) return error.MessageTooLarge;
-    return @intCast(len);
+
+    const result: i32 = @intCast(len);
+    std.debug.assert(result >= 0);
+    std.debug.assert(@as(usize, @intCast(result)) == len);
+    return result;
 }
 
 fn writeIntAt(bytes: []u8, offset: usize, comptime T: type, value: T) void {
-    std.debug.assert(offset + @sizeOf(T) <= bytes.len);
+    std.debug.assert(offset <= bytes.len);
+    std.debug.assert(@sizeOf(T) <= bytes.len - offset);
+
     var buffer: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buffer, value, .little);
     @memcpy(bytes[offset .. offset + @sizeOf(T)], &buffer);
 }
 
 fn readI32At(bytes: []const u8, offset: usize, end: usize) Error!i32 {
-    if (offset > end or 4 > end - offset) return error.UnexpectedEnd;
+    std.debug.assert(end <= bytes.len);
+
+    if (offset > end) return error.UnexpectedEnd;
+    if (4 > end - offset) return error.UnexpectedEnd;
+
     var buffer: [4]u8 = undefined;
     @memcpy(&buffer, bytes[offset .. offset + 4]);
     return std.mem.readInt(i32, &buffer, .little);
 }
 
 fn readU32At(bytes: []const u8, offset: usize, end: usize) Error!u32 {
-    if (offset > end or 4 > end - offset) return error.UnexpectedEnd;
+    std.debug.assert(end <= bytes.len);
+
+    if (offset > end) return error.UnexpectedEnd;
+    if (4 > end - offset) return error.UnexpectedEnd;
+
     var buffer: [4]u8 = undefined;
     @memcpy(&buffer, bytes[offset .. offset + 4]);
     return std.mem.readInt(u32, &buffer, .little);
 }
 
 fn readDocumentAt(bytes: []const u8, offset: usize, end: usize) Error![]const u8 {
-    if (offset > end or 4 > end - offset) return error.UnexpectedEnd;
+    std.debug.assert(end <= bytes.len);
+
+    if (offset > end) return error.UnexpectedEnd;
+    if (4 > end - offset) return error.UnexpectedEnd;
 
     const length_i32 = try readI32At(bytes, offset, end);
     if (length_i32 < 5) return error.InvalidDocumentLength;
@@ -357,12 +392,28 @@ fn readDocumentAt(bytes: []const u8, offset: usize, end: usize) Error![]const u8
     const length: usize = @intCast(length_i32);
     if (length > end - offset) return error.UnexpectedEnd;
 
-    return bytes[offset .. offset + length];
+    const document = bytes[offset .. offset + length];
+    std.debug.assert(document.len == length);
+    return document;
 }
 
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+test "checkedI32Len enforces the i32 wire-length boundary" {
+    const maximum: usize = @intCast(std.math.maxInt(i32));
+
+    try std.testing.expectEqual(
+        @as(i32, std.math.maxInt(i32)),
+        try checkedI32Len(maximum),
+    );
+
+    try std.testing.expectError(
+        error.MessageTooLarge,
+        checkedI32Len(maximum + 1),
+    );
+}
 
 test "encodeBody builds OP_MSG header, flags, kind 0, and BSON body" {
     const allocator = std.testing.allocator;

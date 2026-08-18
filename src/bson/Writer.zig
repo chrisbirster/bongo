@@ -913,7 +913,7 @@ test "user-defined binary subtype survives round trip" {
     try writer.writeBinary(
         "data",
         .{
-            .subtype = types.BinarySubtype
+            .subtype = try types.BinarySubtype
                 .userDefined(0x80),
 
             .data = &.{ 9, 8 },
