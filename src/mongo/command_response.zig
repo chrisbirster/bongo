@@ -5,6 +5,7 @@ const op_msg = @import("op_msg.zig");
 pub const Error = error{
     UnexpectedResponse,
     CommandFailed,
+    WriteConcernFailed,
 };
 
 pub fn validate(
@@ -20,6 +21,11 @@ pub fn validate(
     const ok = (try bson.Reader.get(body, "ok")) orelse
         return error.CommandFailed;
     if (!commandSucceeded(ok)) return error.CommandFailed;
+
+    if ((try bson.Reader.get(body, "writeConcernError")) != null) {
+        return error.WriteConcernFailed;
+    }
+
     return body;
 }
 
