@@ -221,7 +221,7 @@ pub const Client = struct {
         filter: anytype,
         update: anytype,
     ) !crud.UpdateResult {
-        return self.update(
+        return self.runUpdate(
             database_name,
             collection_name,
             filter,
@@ -237,7 +237,7 @@ pub const Client = struct {
         filter: anytype,
         update: anytype,
     ) !crud.UpdateResult {
-        return self.update(
+        return self.runUpdate(
             database_name,
             collection_name,
             filter,
@@ -246,7 +246,7 @@ pub const Client = struct {
         );
     }
 
-    fn update(
+    fn runUpdate(
         self: *Client,
         database_name: []const u8,
         collection_name: []const u8,
