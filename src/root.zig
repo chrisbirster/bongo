@@ -7,6 +7,8 @@ pub const Collection = @import("mongo/client.zig").Collection;
 pub const Cursor = @import("mongo/client.zig").Cursor;
 pub const FindResult = @import("mongo/client.zig").FindResult;
 pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
+pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
+pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
 pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
 pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -24,6 +26,8 @@ pub const mongo = struct {
     pub const Cursor = @import("mongo/client.zig").Cursor;
     pub const FindResult = @import("mongo/client.zig").FindResult;
     pub const OwnedDocument = @import("mongo/client.zig").OwnedDocument;
+    pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
+    pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const InsertOneResult = @import("mongo/crud.zig").InsertOneResult;
     pub const InsertManyResult = @import("mongo/crud.zig").InsertManyResult;
     pub const UpdateResult = @import("mongo/crud.zig").UpdateResult;
@@ -41,4 +45,6 @@ test {
     _ = @import("mongo/auth.zig");
     _ = @import("mongo/client.zig");
     _ = @import("mongo/crud.zig");
+    _ = @import("mongo/replacement.zig");
+    _ = @import("mongo/find_and_modify.zig");
 }
