@@ -18,6 +18,11 @@ pub const InsertOneResult = struct {
     inserted_count: i64,
 };
 
+pub const UpdateResult = struct {
+    matched_count: i64,
+    modified_count: i64,
+};
+
 pub fn encodeInsertOne(
     allocator: Allocator,
     request_id: i32,
@@ -59,6 +64,62 @@ pub fn encodeInsert(
     );
 }
 
+pub fn encodeUpdateOne(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+    update: anytype,
+) ![]u8 {
+    return encodeUpdate(
+        allocator,
+        request_id,
+        database_name,
+        collection_name,
+        filter,
+        update,
+        false,
+    );
+}
+
+pub fn encodeUpdate(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+    update: anytype,
+    multi: bool,
+) ![]u8 {
+    const UpdateSpec = struct {
+        q: @TypeOf(filter),
+        u: @TypeOf(update),
+        multi: bool,
+    };
+
+    const updates = [_]UpdateSpec{
+        .{
+            .q = filter,
+            .u = update,
+            .multi = multi,
+        },
+    };
+
+    return op_msg.encodeCommand(
+        allocator,
+        .{
+            .update = collection_name,
+            .updates = &updates,
+            .ordered = true,
+            .@"$db" = database_name,
+        },
+        .{
+            .request_id = request_id,
+        },
+    );
+}
+
 pub fn parseInsertOneResponse(
     response_bytes: []const u8,
     expected_response_to: i32,
@@ -70,6 +131,21 @@ pub fn parseInsertOneResponse(
 
     return .{
         .inserted_count = try requiredCount(body, "n"),
+    };
+}
+
+pub fn parseUpdateResponse(
+    response_bytes: []const u8,
+    expected_response_to: i32,
+) !UpdateResult {
+    const body = try validatedWriteBody(
+        response_bytes,
+        expected_response_to,
+    );
+
+    return .{
+        .matched_count = try requiredCount(body, "n"),
+        .modified_count = try requiredCount(body, "nModified"),
     };
 }
 
@@ -224,4 +300,65 @@ test "insert response surfaces write error" {
         error.WriteFailed,
         parseInsertOneResponse(response, 42),
     );
+}
+
+test "updateOne command encodes filter update and multi false" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeUpdateOne(
+        allocator,
+        43,
+        "test",
+        "users",
+        .{ .name = "Bongo" },
+        .{ .@"$set" = .{ .active = true } },
+    );
+    defer allocator.free(request);
+
+    const message = try op_msg.decode(request);
+    const body = try message.body();
+
+    try std.testing.expectEqualStrings(
+        "users",
+        (try bson.Reader.get(body, "update")).?.string,
+    );
+
+    const updates = (try bson.Reader.get(body, "updates")).?.array;
+    const spec = (try bson.Reader.get(updates, "0")).?.document;
+    const query = (try bson.Reader.get(spec, "q")).?.document;
+    const update = (try bson.Reader.get(spec, "u")).?.document;
+    const set = (try bson.Reader.get(update, "$set")).?.document;
+
+    try std.testing.expectEqualStrings(
+        "Bongo",
+        (try bson.Reader.get(query, "name")).?.string,
+    );
+    try std.testing.expect(
+        (try bson.Reader.get(set, "active")).?.boolean,
+    );
+    try std.testing.expect(
+        !(try bson.Reader.get(spec, "multi")).?.boolean,
+    );
+}
+
+test "update response returns matched and modified counts" {
+    const allocator = std.testing.allocator;
+
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .n = @as(i32, 1),
+            .nModified = @as(i32, 1),
+            .ok = @as(f64, 1.0),
+        },
+        .{
+            .request_id = 92,
+            .response_to = 43,
+        },
+    );
+    defer allocator.free(response);
+
+    const result = try parseUpdateResponse(response, 43);
+    try std.testing.expectEqual(@as(i64, 1), result.matched_count);
+    try std.testing.expectEqual(@as(i64, 1), result.modified_count);
 }

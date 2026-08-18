@@ -157,6 +157,37 @@ pub const Client = struct {
         return crud.parseInsertOneResponse(response, request_id);
     }
 
+    /// Update one document matching a filter.
+    pub fn updateOne(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update: anytype,
+    ) !crud.UpdateResult {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try crud.encodeUpdateOne(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+            update,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return crud.parseUpdateResponse(response, request_id);
+    }
+
     fn getMore(
         self: *Client,
         database_name: []const u8,
@@ -286,6 +317,19 @@ pub const Collection = struct {
             self.database_name,
             self.name,
             document,
+        );
+    }
+
+    pub fn updateOne(
+        self: Collection,
+        filter: anytype,
+        update: anytype,
+    ) !crud.UpdateResult {
+        return self.client.updateOne(
+            self.database_name,
+            self.name,
+            filter,
+            update,
         );
     }
 };
