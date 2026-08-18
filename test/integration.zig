@@ -25,4 +25,5 @@ test {
     _ = @import("integration/24_read_concern.zig");
     _ = @import("integration/25_find_options.zig");
     _ = @import("integration/26_operation_options.zig");
+    _ = @import("integration/27_aggregate.zig");
 }
