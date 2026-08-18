@@ -31,4 +31,5 @@ test {
     _ = @import("integration/30_drop_collection.zig");
     _ = @import("integration/31_list_collections.zig");
     _ = @import("integration/32_rename_collection.zig");
+    _ = @import("integration/33_create_index.zig");
 }
