@@ -4,6 +4,7 @@ const Connection = @import("connection.zig").Connection;
 const authenticate = @import("auth.zig").authenticate;
 const crud = @import("crud.zig");
 const op_msg = @import("op_msg.zig");
+const replacement_ops = @import("replacement.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -244,6 +245,36 @@ pub const Client = struct {
             update,
             true,
         );
+    }
+
+    pub fn replaceOne(
+        self: *Client,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        replacement: anytype,
+    ) !crud.UpdateResult {
+        if (database_name.len == 0) return error.EmptyDatabase;
+        if (collection_name.len == 0) return error.EmptyCollection;
+
+        const request_id = self.takeRequestId();
+        const request = try replacement_ops.encodeReplaceOne(
+            self.allocator,
+            request_id,
+            database_name,
+            collection_name,
+            filter,
+            replacement,
+        );
+        defer self.allocator.free(request);
+
+        const response = try self.connection.request(
+            self.allocator,
+            request,
+        );
+        defer self.allocator.free(response);
+
+        return crud.parseUpdateResponse(response, request_id);
     }
 
     fn runUpdate(
@@ -487,6 +518,19 @@ pub const Collection = struct {
             self.name,
             filter,
             update,
+        );
+    }
+
+    pub fn replaceOne(
+        self: Collection,
+        filter: anytype,
+        replacement: anytype,
+    ) !crud.UpdateResult {
+        return self.client.replaceOne(
+            self.database_name,
+            self.name,
+            filter,
+            replacement,
         );
     }
 
