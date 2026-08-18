@@ -9,14 +9,15 @@ const Allocator = std.mem.Allocator;
 pub const Error = error{
     InvalidSkip,
     InvalidLimit,
+    InvalidMaxTime,
 };
 
 pub const Cursor = command_cursor.Cursor;
 
 /// Run a find command with an anonymous options struct.
 ///
-/// Supported fields in this milestone are `projection`, `sort`, `skip`, and
-/// `limit`. Omitted fields are not sent to MongoDB.
+/// Supported fields are `projection`, `sort`, `skip`, `limit`, `collation`,
+/// `hint`, `comment`, `maxTimeMS`, and `let`. Omitted fields are not sent.
 pub fn findWithOptions(
     collection: anytype,
     filter: anytype,
@@ -71,15 +72,16 @@ pub fn encodeFind(
     try writer.writeDocument("filter", filter_document);
 
     if (comptime @hasField(Options, "projection")) {
-        const document = try bson.encode(allocator, options.projection);
-        defer allocator.free(document);
-        try writer.writeDocument("projection", document);
+        try writeEncodedValue(
+            &writer,
+            allocator,
+            "projection",
+            options.projection,
+        );
     }
 
     if (comptime @hasField(Options, "sort")) {
-        const document = try bson.encode(allocator, options.sort);
-        defer allocator.free(document);
-        try writer.writeDocument("sort", document);
+        try writeEncodedValue(&writer, allocator, "sort", options.sort);
     }
 
     if (comptime @hasField(Options, "skip")) {
@@ -92,6 +94,33 @@ pub fn encodeFind(
         const limit: i64 = @intCast(options.limit);
         if (limit < 0) return error.InvalidLimit;
         try writer.writeInt64("limit", limit);
+    }
+
+    if (comptime @hasField(Options, "collation")) {
+        try writeEncodedValue(
+            &writer,
+            allocator,
+            "collation",
+            options.collation,
+        );
+    }
+
+    if (comptime @hasField(Options, "hint")) {
+        try writeEncodedValue(&writer, allocator, "hint", options.hint);
+    }
+
+    if (comptime @hasField(Options, "comment")) {
+        try writeEncodedValue(&writer, allocator, "comment", options.comment);
+    }
+
+    if (comptime @hasField(Options, "maxTimeMS")) {
+        const timeout: i64 = @intCast(options.maxTimeMS);
+        if (timeout < 0) return error.InvalidMaxTime;
+        try writer.writeInt64("maxTimeMS", timeout);
+    }
+
+    if (comptime @hasField(Options, "let")) {
+        try writeEncodedValue(&writer, allocator, "let", options.let);
     }
 
     if (concern) |configured| {
@@ -109,6 +138,19 @@ pub fn encodeFind(
         body,
         .{ .request_id = request_id },
     );
+}
+
+fn writeEncodedValue(
+    writer: *bson.Writer,
+    allocator: Allocator,
+    name: []const u8,
+    value: anytype,
+) !void {
+    const holder = try bson.encode(allocator, .{ .value = value });
+    defer allocator.free(holder);
+    const encoded = (try bson.Reader.get(holder, "value")) orelse
+        unreachable;
+    try writer.writeValue(name, encoded);
 }
 
 test "find options encode projection sort skip and limit" {
@@ -152,7 +194,54 @@ test "find options encode projection sort skip and limit" {
     );
 }
 
-test "find options reject negative skip and limit" {
+test "advanced find options are encoded only when supplied" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeFind(
+        allocator,
+        65,
+        "test",
+        "users",
+        .{},
+        .{
+            .collation = .{ .locale = "en", .strength = @as(i32, 2) },
+            .hint = "_id_",
+            .comment = "bongo advanced options",
+            .maxTimeMS = @as(i64, 1000),
+            .let = .{ .threshold = @as(i32, 2) },
+        },
+        null,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    const collation = (try bson.Reader.get(body, "collation")).?.document;
+    const variables = (try bson.Reader.get(body, "let")).?.document;
+
+    try std.testing.expectEqualStrings(
+        "en",
+        (try bson.Reader.get(collation, "locale")).?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "_id_",
+        (try bson.Reader.get(body, "hint")).?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "bongo advanced options",
+        (try bson.Reader.get(body, "comment")).?.string,
+    );
+    try std.testing.expectEqual(
+        @as(i64, 1000),
+        (try bson.Reader.get(body, "maxTimeMS")).?.int64,
+    );
+    try std.testing.expectEqual(
+        @as(i32, 2),
+        (try bson.Reader.get(variables, "threshold")).?.int32,
+    );
+    try std.testing.expect((try bson.Reader.get(body, "sort")) == null);
+}
+
+test "find options reject negative numeric controls" {
     const allocator = std.testing.allocator;
 
     try std.testing.expectError(
@@ -176,6 +265,18 @@ test "find options reject negative skip and limit" {
             "users",
             .{},
             .{ .limit = @as(i64, -1) },
+            null,
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidMaxTime,
+        encodeFind(
+            allocator,
+            66,
+            "test",
+            "users",
+            .{},
+            .{ .maxTimeMS = @as(i64, -1) },
             null,
         ),
     );
