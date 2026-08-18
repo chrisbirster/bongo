@@ -196,6 +196,25 @@ pub fn saltedPassword(
     return result;
 }
 
+/// Derive the SCRAM ClientKey from the SaltedPassword.
+///
+/// RFC 5802 defines this as:
+/// ClientKey := HMAC(SaltedPassword, "Client Key")
+pub fn clientKey(
+    salted_password: *const [salted_password_length]u8,
+) [salted_password_length]u8 {
+    var result: [salted_password_length]u8 = undefined;
+
+    HmacSha256.create(
+        &result,
+        "Client Key",
+        salted_password[0..],
+    );
+
+    std.debug.assert(result.len == salted_password_length);
+    return result;
+}
+
 test "SCRAM salt decodes from Base64" {
     const salt = try decodeSalt(
         std.testing.allocator,
@@ -255,6 +274,30 @@ test "SCRAM salted password enforces MongoDB iteration minimum" {
             "salt",
             4095,
         ),
+    );
+}
+
+test "SCRAM client key matches SHA-256 conversation" {
+    const salted_password = [_]u8{
+        0xc4, 0xa4, 0x95, 0x10, 0x32, 0x3a, 0xb4, 0xf9,
+        0x52, 0xca, 0xc1, 0xfa, 0x99, 0x44, 0x19, 0x39,
+        0xe7, 0x8e, 0xa7, 0x4d, 0x6b, 0xe8, 0x1d, 0xdf,
+        0x70, 0x96, 0xe8, 0x75, 0x13, 0xdc, 0x61, 0x5d,
+    };
+
+    const result = clientKey(&salted_password);
+
+    const expected = [_]u8{
+        0xa6, 0x0f, 0xc9, 0x23, 0xd6, 0x7e, 0x86, 0x44,
+        0xa9, 0x2d, 0x16, 0xb9, 0x6e, 0xda, 0x5e, 0xf4,
+        0x65, 0x6b, 0x0c, 0x72, 0x5c, 0x48, 0x43, 0x74,
+        0xbe, 0x25, 0x53, 0x55, 0x76, 0x99, 0x6e, 0x8b,
+    };
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &expected,
+        &result,
     );
 }
 
