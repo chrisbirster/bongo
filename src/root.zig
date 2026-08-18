@@ -12,4 +12,5 @@ test {
     _ = @import("mongo/op_msg.zig");
     _ = @import("mongo/connection.zig");
     _ = @import("mongo/scram.zig");
+    _ = @import("mongo/scram_final.zig");
 }
