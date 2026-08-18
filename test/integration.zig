@@ -27,4 +27,5 @@ test {
     _ = @import("integration/26_operation_options.zig");
     _ = @import("integration/27_aggregate.zig");
     _ = @import("integration/28_explain.zig");
+    _ = @import("integration/29_create_collection.zig");
 }
