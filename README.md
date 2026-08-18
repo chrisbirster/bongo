@@ -18,7 +18,9 @@ Currently implemented:
 - `hello` command
 - SCRAM-SHA-256 authentication
 - application-facing `Client`, `Database`, and `Collection` handles
-- `Collection.find()` with BSON document iteration
+- `Collection.find()` with automatic MongoDB cursor iteration
+- `getMore` for multi-batch find results
+- `killCursors` cleanup for cursors stopped early
 - integration tests against a real MongoDB server
 
 ## Why?
@@ -46,15 +48,14 @@ fn run(io: std.Io, allocator: std.mem.Allocator) !void {
         .database("test")
         .collection("users");
 
-    var result = try users.find(.{ .active = true });
-    defer result.deinit();
+    var cursor = try users.find(.{ .active = true });
+    defer cursor.deinit();
 
-    var documents = try result.iterator();
-    while (try documents.next()) |document| {
+    while (try cursor.next()) |document| {
         const name = (try bongo.bson.Reader.get(document, "name")).?.string;
         std.debug.print("{s}\n", .{name});
     }
 }
 ```
 
-The driver API builds the MongoDB command, sends OP_MSG over the authenticated connection, validates the response, and exposes the returned `firstBatch` as BSON documents. Applications no longer need to construct OP_MSG packets for normal finds.
+`Collection.find()` returns a cursor. Bongo reads `firstBatch`, automatically sends `getMore` when that batch is exhausted, and stops when MongoDB returns cursor id `0`. If iteration stops early, cursor cleanup sends `killCursors` during `deinit()`.

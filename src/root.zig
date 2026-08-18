@@ -4,6 +4,7 @@ pub const bson = @import("bson.zig");
 pub const Client = @import("mongo/client.zig").Client;
 pub const Database = @import("mongo/client.zig").Database;
 pub const Collection = @import("mongo/client.zig").Collection;
+pub const Cursor = @import("mongo/client.zig").Cursor;
 pub const FindResult = @import("mongo/client.zig").FindResult;
 
 pub const mongo = struct {
@@ -15,6 +16,7 @@ pub const mongo = struct {
     pub const Client = @import("mongo/client.zig").Client;
     pub const Database = @import("mongo/client.zig").Database;
     pub const Collection = @import("mongo/client.zig").Collection;
+    pub const Cursor = @import("mongo/client.zig").Cursor;
     pub const FindResult = @import("mongo/client.zig").FindResult;
 };
 
