@@ -82,7 +82,7 @@ pub const TlsConnection = struct {
         }
 
         const host_name = try net.HostName.init(host);
-        const now = try Io.Clock.real.now(io);
+        const now = Io.Clock.real.now(io);
 
         var ca_bundle: std.crypto.Certificate.Bundle = .{};
         errdefer ca_bundle.deinit(allocator);
