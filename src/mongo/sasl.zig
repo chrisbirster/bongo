@@ -5,6 +5,18 @@ const Connection = @import("connection.zig").Connection;
 
 const Allocator = std.mem.Allocator;
 
+pub const Mechanism = enum {
+    scram_sha_1,
+    scram_sha_256,
+
+    pub fn wireName(self: Mechanism) []const u8 {
+        return switch (self) {
+            .scram_sha_1 => "SCRAM-SHA-1",
+            .scram_sha_256 => "SCRAM-SHA-256",
+        };
+    }
+};
+
 pub const Error = error{
     UnexpectedResponse,
     CommandFailed,
@@ -27,18 +39,36 @@ pub const Response = struct {
     }
 };
 
-/// Encode a SCRAM-SHA-256 saslStart command.
+/// Encode a SCRAM-SHA-256 saslStart command for compatibility with the
+/// original Bongo auth path.
 pub fn encodeStart(
     allocator: Allocator,
     request_id: i32,
     database: []const u8,
     payload: []const u8,
 ) ![]u8 {
+    return encodeStartWithMechanism(
+        allocator,
+        request_id,
+        database,
+        .scram_sha_256,
+        payload,
+    );
+}
+
+/// Encode a saslStart command for a selected SCRAM mechanism.
+pub fn encodeStartWithMechanism(
+    allocator: Allocator,
+    request_id: i32,
+    database: []const u8,
+    mechanism: Mechanism,
+    payload: []const u8,
+) ![]u8 {
     return op_msg.encodeCommand(
         allocator,
         .{
             .saslStart = @as(i32, 1),
-            .mechanism = "SCRAM-SHA-256",
+            .mechanism = mechanism.wireName(),
             .payload = bson.Binary{
                 .subtype = .generic,
                 .data = payload,
@@ -79,7 +109,7 @@ pub fn encodeContinue(
     );
 }
 
-/// Send saslStart and return an owned copy of the server payload.
+/// Send the historical SCRAM-SHA-256 saslStart command.
 pub fn start(
     connection: *Connection,
     allocator: Allocator,
@@ -87,10 +117,30 @@ pub fn start(
     database: []const u8,
     payload: []const u8,
 ) !Response {
-    const request = try encodeStart(
+    return startWithMechanism(
+        connection,
         allocator,
         request_id,
         database,
+        .scram_sha_256,
+        payload,
+    );
+}
+
+/// Send saslStart with an explicitly selected SCRAM mechanism.
+pub fn startWithMechanism(
+    connection: *Connection,
+    allocator: Allocator,
+    request_id: i32,
+    database: []const u8,
+    mechanism: Mechanism,
+    payload: []const u8,
+) !Response {
+    const request = try encodeStartWithMechanism(
+        allocator,
+        request_id,
+        database,
+        mechanism,
         payload,
     );
     defer allocator.free(request);
@@ -234,6 +284,24 @@ test "saslStart encodes SCRAM-SHA-256 binary payload and options" {
     const options = (try bson.Reader.get(body, "options")).?.document;
     try std.testing.expect(
         (try bson.Reader.get(options, "skipEmptyExchange")).?.boolean,
+    );
+}
+
+test "saslStart can encode SCRAM-SHA-1" {
+    const bytes = try encodeStartWithMechanism(
+        std.testing.allocator,
+        21,
+        "admin",
+        .scram_sha_1,
+        "n,,n=user,r=nonce",
+    );
+    defer std.testing.allocator.free(bytes);
+
+    const message = try op_msg.decode(bytes);
+    const body = try message.body();
+    try std.testing.expectEqualStrings(
+        "SCRAM-SHA-1",
+        (try bson.Reader.get(body, "mechanism")).?.string,
     );
 }
 
