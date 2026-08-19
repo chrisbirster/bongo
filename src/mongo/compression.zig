@@ -152,7 +152,9 @@ fn compressZlib(allocator: Allocator, input: []const u8) ![]u8 {
     const block_count = input.len / 65_535 + 1;
     const block_overhead = std.math.mul(usize, block_count, 5) catch
         return error.MessageTooLarge;
-    const capacity = std.math.add(usize, input.len, block_overhead + 6) catch
+    const zlib_overhead = std.math.add(usize, block_overhead, 6) catch
+        return error.MessageTooLarge;
+    const capacity = std.math.add(usize, input.len, zlib_overhead) catch
         return error.MessageTooLarge;
 
     const output_storage = try allocator.alloc(u8, capacity);
