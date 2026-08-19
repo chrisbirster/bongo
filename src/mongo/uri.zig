@@ -54,7 +54,7 @@ pub fn parse(allocator: Allocator, uri: []const u8) (Allocator.Error || Error)!P
     const storage = try allocator.dupe(u8, uri[prefix.len..]);
     errdefer allocator.free(storage);
 
-    var remainder: []u8 = storage;
+    const remainder: []u8 = storage;
 
     const query_index = std.mem.indexOfScalar(u8, remainder, '?');
     const before_query = if (query_index) |index| remainder[0..index] else remainder;
