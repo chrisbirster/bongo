@@ -164,21 +164,23 @@ fn decompressZlib(
     expected_size: usize,
 ) ![]u8 {
     var source: Io.Reader = .fixed(input);
-    var history: [flate.max_window_len]u8 = undefined;
-    var decompressor = flate.Decompress.init(&source, .zlib, &history);
+    // Zig's flate decoder supports direct streaming when the history buffer is
+    // empty. This is also the pattern used by the Zig 0.16 stdlib flate tests.
+    // Stream into a fixed writer so a payload can never expand beyond
+    // MongoDB's advertised uncompressedSize.
+    var decompressor = flate.Decompress.init(&source, .zlib, &.{});
 
     const output = try allocator.alloc(u8, expected_size);
     errdefer allocator.free(output);
-    decompressor.reader.readSliceAll(output) catch return error.InvalidCompressedPayload;
+    var writer: Io.Writer = .fixed(output);
 
-    // Force the zlib footer to be consumed and reject a stream that expands
-    // past MongoDB's advertised uncompressedSize.
-    var extra: [1]u8 = undefined;
-    if (decompressor.reader.readSliceAll(&extra)) |_| {
+    const decompressed_len = decompressor.reader.streamRemaining(&writer) catch |err| switch (err) {
+        error.WriteFailed => return error.UncompressedSizeMismatch,
+        error.ReadFailed => return error.InvalidCompressedPayload,
+    };
+
+    if (decompressed_len != expected_size or writer.end != expected_size) {
         return error.UncompressedSizeMismatch;
-    } else |err| switch (err) {
-        error.EndOfStream => {},
-        else => return error.InvalidCompressedPayload,
     }
     return output;
 }
