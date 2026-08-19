@@ -65,18 +65,7 @@ const Lookup = struct {
     }
 };
 
-/// Resolve a `mongodb+srv://` URI into the same owned, normalized option model
-/// returned by `parseConnectionOptions` for a normal `mongodb://` URI.
-///
-/// Discovery is complete before this function returns: SRV hosts are validated
-/// against the original parent domain, TXT defaults are merged, SRV-only
-/// options are consumed, and TLS is enabled implicitly unless the URI says
-/// otherwise. The caller owns the returned options and must call `deinit()`.
-pub fn resolve(
-    io: Io,
-    allocator: Allocator,
-    connection_string: []const u8,
-) (Allocator.Error || Error || net.Socket.BindError || net.Socket.SendError || net.Socket.ReceiveTimeoutError || net.HostName.ResolvConf.InitError)!uri_options.Options {
+pub fn resolve(io: Io, allocator: Allocator, connection_string: []const u8) !uri_options.Options {
     var parsed = try parseSrvUri(allocator, connection_string);
     defer parsed.deinit(allocator);
 
@@ -89,70 +78,50 @@ pub fn resolve(
         if (!validTarget(parsed.host, record.host)) return error.InvalidSrvTarget;
     }
 
+    var selected = lookup.srv;
     if (parsed.max_hosts > 0 and parsed.max_hosts < lookup.srv.len) {
         shuffle(io, lookup.srv);
-        const keep: usize = @intCast(parsed.max_hosts);
-        for (lookup.srv[keep..]) |record| record.deinit(allocator);
-        lookup.srv = try allocator.realloc(lookup.srv, keep);
+        selected = lookup.srv[0..@intCast(parsed.max_hosts)];
     }
 
-    const synthesized = try synthesizeConnectionString(
-        allocator,
-        parsed,
-        lookup.srv,
-        lookup.txt,
-    );
+    const synthesized = try synthesizeConnectionString(allocator, parsed, selected, lookup.txt);
     defer allocator.free(synthesized);
 
     var options = try uri_options.parse(allocator, synthesized);
     errdefer options.deinit();
-
     if (parsed.max_hosts > 0 and
         (options.replica_set != null or options.load_balanced == true))
     {
         return error.IncompatibleSrvOptions;
     }
-
     return options;
 }
 
-/// Parent-domain validation required by the MongoDB Initial DNS Seedlist
-/// Discovery specification.
 pub fn validTarget(original_host: []const u8, target: []const u8) bool {
     if (original_host.len == 0 or target.len == 0) return false;
-
     const original_labels = labelCount(original_host);
     const domain = if (original_labels >= 3)
         original_host[(std.mem.indexOfScalar(u8, original_host, '.') orelse return false) + 1 ..]
     else
         original_host;
 
-    if (std.ascii.eqlIgnoreCase(target, domain)) {
-        return original_labels >= 3;
-    }
+    if (std.ascii.eqlIgnoreCase(target, domain)) return original_labels >= 3;
     if (target.len <= domain.len) return false;
     if (!std.ascii.endsWithIgnoreCase(target, domain)) return false;
     if (target[target.len - domain.len - 1] != '.') return false;
-
-    if (original_labels < 3 and labelCount(target) <= original_labels) {
-        return false;
-    }
+    if (original_labels < 3 and labelCount(target) <= original_labels) return false;
     return true;
 }
 
 fn parseSrvUri(allocator: Allocator, connection_string: []const u8) (Allocator.Error || Error)!SrvUri {
     const prefix = "mongodb+srv://";
-    if (!std.mem.startsWith(u8, connection_string, prefix)) {
-        return error.UnsupportedScheme;
-    }
-
+    if (!std.mem.startsWith(u8, connection_string, prefix)) return error.UnsupportedScheme;
     const remainder = connection_string[prefix.len..];
     if (remainder.len == 0) return error.MissingHost;
 
     const question = std.mem.indexOfScalar(u8, remainder, '?');
     const before_query = if (question) |i| remainder[0..i] else remainder;
     const query = if (question) |i| remainder[i + 1 ..] else null;
-
     const slash = std.mem.indexOfScalar(u8, before_query, '/');
     const authority = if (slash) |i| before_query[0..i] else before_query;
     const database = if (slash) |i| before_query[i + 1 ..] else null;
@@ -203,8 +172,7 @@ fn parseSrvUri(allocator: Allocator, connection_string: []const u8) (Allocator.E
                 const decoded = try decodeComponent(allocator, raw_value);
                 defer allocator.free(decoded);
                 if (decoded.len == 0) return error.InvalidSrvMaxHosts;
-                max_hosts = std.fmt.parseInt(u32, decoded, 10) catch
-                    return error.InvalidSrvMaxHosts;
+                max_hosts = std.fmt.parseInt(u32, decoded, 10) catch return error.InvalidSrvMaxHosts;
             }
         }
     }
@@ -221,11 +189,7 @@ fn parseSrvUri(allocator: Allocator, connection_string: []const u8) (Allocator.E
 }
 
 fn lookupDns(io: Io, allocator: Allocator, host: []const u8, service: []const u8) !Lookup {
-    const srv_name = try std.fmt.allocPrint(
-        allocator,
-        "_{s}._tcp.{s}",
-        .{ service, host },
-    );
+    const srv_name = try std.fmt.allocPrint(allocator, "_{s}._tcp.{s}", .{ service, host });
     defer allocator.free(srv_name);
 
     const srv_packet = try queryDns(io, allocator, srv_name, dns_type_srv);
@@ -236,13 +200,9 @@ fn lookupDns(io: Io, allocator: Allocator, host: []const u8, service: []const u8
         allocator.free(srv);
     }
 
-    const txt_packet = queryDns(io, allocator, host, dns_type_txt) catch |err| switch (err) {
-        error.DnsQueryFailed => return .{ .srv = srv, .txt = null },
-        else => |e| return e,
-    };
+    const txt_packet = try queryDns(io, allocator, host, dns_type_txt);
     defer allocator.free(txt_packet);
     const txt = try parseTxtResponse(allocator, txt_packet);
-
     return .{ .srv = srv, .txt = txt };
 }
 
@@ -250,11 +210,10 @@ fn queryDns(io: Io, allocator: Allocator, name: []const u8, record_type: u16) ![
     var id_bytes: [2]u8 = undefined;
     io.random(&id_bytes);
     const transaction_id = std.mem.readInt(u16, &id_bytes, .little);
-
     const request = try encodeDnsQuery(allocator, transaction_id, name, record_type);
     defer allocator.free(request);
 
-    var resolv = try net.HostName.ResolvConf.init(io);
+    const resolv = try net.HostName.ResolvConf.init(io);
     const nameservers = resolv.nameservers();
     if (nameservers.len == 0) return error.DnsQueryFailed;
 
@@ -262,50 +221,38 @@ fn queryDns(io: Io, allocator: Allocator, name: []const u8, record_type: u16) ![
     var attempt: u32 = 0;
     while (attempt < @max(resolv.attempts, 1)) : (attempt += 1) {
         for (nameservers) |nameserver| {
-            var bind_address: net.IpAddress = switch (nameserver) {
-                .ip4 => .{ .ip4 = .unspecified(0) },
-                .ip6 => .{ .ip6 = .unspecified(0) },
-            };
-            const socket = bind_address.bind(io, .{
-                .mode = .dgram,
-                .protocol = .udp,
-            }) catch continue;
-            defer socket.close(io);
-
-            socket.send(io, &nameserver, request) catch continue;
-            const incoming = socket.receiveTimeout(
-                io,
-                &response_buffer,
-                .{ .duration = .{
+            const maybe_response: ?[]u8 = blk: {
+                const bind_address: net.IpAddress = switch (nameserver) {
+                    .ip4 => .{ .ip4 = .unspecified(0) },
+                    .ip6 => .{ .ip6 = .unspecified(0) },
+                };
+                const socket = bind_address.bind(io, .{ .mode = .dgram, .protocol = .udp }) catch break :blk null;
+                defer socket.close(io);
+                socket.send(io, &nameserver, request) catch break :blk null;
+                const incoming = socket.receiveTimeout(io, &response_buffer, .{ .duration = .{
                     .raw = Io.Duration.fromSeconds(@intCast(@max(resolv.timeout_seconds, 1))),
                     .clock = .awake,
-                } },
-            ) catch continue;
-
-            if (incoming.data.len < 12) continue;
-            if (std.mem.readInt(u16, incoming.data[0..2], .big) != transaction_id) continue;
-            const flags = std.mem.readInt(u16, incoming.data[2..4], .big);
-            if (flags & 0x8000 == 0 or flags & 0x000f != 0) continue;
-            return allocator.dupe(u8, incoming.data);
+                } }) catch break :blk null;
+                if (incoming.data.len < 12) break :blk null;
+                if (std.mem.readInt(u16, incoming.data[0..2], .big) != transaction_id) break :blk null;
+                const flags = std.mem.readInt(u16, incoming.data[2..4], .big);
+                if (flags & 0x8000 == 0 or flags & 0x000f != 0 or flags & 0x0200 != 0) break :blk null;
+                break :blk try allocator.dupe(u8, incoming.data);
+            };
+            if (maybe_response) |response| return response;
         }
     }
     return error.DnsQueryFailed;
 }
 
-fn encodeDnsQuery(
-    allocator: Allocator,
-    transaction_id: u16,
-    name: []const u8,
-    record_type: u16,
-) (Allocator.Error || Error)![]u8 {
+fn encodeDnsQuery(allocator: Allocator, transaction_id: u16, name: []const u8, record_type: u16) (Allocator.Error || Error)![]u8 {
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(allocator);
-
     try bytes.resize(allocator, 12);
     @memset(bytes.items, 0);
     std.mem.writeInt(u16, bytes.items[0..2], transaction_id, .big);
-    std.mem.writeInt(u16, bytes.items[2..4], 0x0100, .big); // recursion desired
-    std.mem.writeInt(u16, bytes.items[4..6], 1, .big); // one question
+    std.mem.writeInt(u16, bytes.items[2..4], 0x0100, .big);
+    std.mem.writeInt(u16, bytes.items[4..6], 1, .big);
 
     var labels = std.mem.splitScalar(u8, name, '.');
     var saw_label = false;
@@ -317,7 +264,6 @@ fn encodeDnsQuery(
     }
     if (!saw_label) return error.InvalidSrvHost;
     try bytes.append(allocator, 0);
-
     var tail: [4]u8 = undefined;
     std.mem.writeInt(u16, tail[0..2], record_type, .big);
     std.mem.writeInt(u16, tail[2..4], dns_class_in, .big);
@@ -326,8 +272,7 @@ fn encodeDnsQuery(
 }
 
 fn parseSrvResponse(allocator: Allocator, packet: []const u8) (Allocator.Error || Error)![]SrvRecord {
-    var response = net.HostName.DnsResponse.init(packet) catch
-        return error.InvalidDnsResponse;
+    var response = net.HostName.DnsResponse.init(packet) catch return error.InvalidDnsResponse;
     var records: std.ArrayList(SrvRecord) = .empty;
     errdefer {
         for (records.items) |record| record.deinit(allocator);
@@ -338,30 +283,22 @@ fn parseSrvResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
         if (@intFromEnum(answer.rr) != dns_type_srv) continue;
         if (answer.data_len < 7) return error.InvalidDnsResponse;
         const data_off: usize = answer.data_off;
-        const data_end = data_off + answer.data_len;
+        const data_end = data_off + @as(usize, answer.data_len);
         if (data_end > packet.len) return error.InvalidDnsResponse;
-
         const port = std.mem.readInt(u16, packet[data_off + 4 .. data_off + 6], .big);
         if (port == 0) return error.InvalidSrvPort;
         var name_buffer: [net.HostName.max_len]u8 = undefined;
-        const expanded = net.HostName.expand(packet, data_off + 6, &name_buffer) catch
-            return error.InvalidDnsResponse;
+        const expanded = net.HostName.expand(packet, data_off + 6, &name_buffer) catch return error.InvalidDnsResponse;
         const target = expanded[1].bytes;
         if (target.len == 0) return error.InvalidSrvTarget;
-
-        try records.append(allocator, .{
-            .host = try allocator.dupe(u8, target),
-            .port = port,
-        });
+        try records.append(allocator, .{ .host = try allocator.dupe(u8, target), .port = port });
     }
-
     if (records.items.len == 0) return error.NoSrvRecords;
     return records.toOwnedSlice(allocator);
 }
 
 fn parseTxtResponse(allocator: Allocator, packet: []const u8) (Allocator.Error || Error)!?[]u8 {
-    var response = net.HostName.DnsResponse.init(packet) catch
-        return error.InvalidDnsResponse;
+    var response = net.HostName.DnsResponse.init(packet) catch return error.InvalidDnsResponse;
     var txt: std.ArrayList(u8) = .empty;
     errdefer txt.deinit(allocator);
     var records: usize = 0;
@@ -370,9 +307,8 @@ fn parseTxtResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
         if (@intFromEnum(answer.rr) != dns_type_txt) continue;
         records += 1;
         if (records > 1) return error.MultipleTxtRecords;
-
         var offset: usize = answer.data_off;
-        const end = offset + answer.data_len;
+        const end = offset + @as(usize, answer.data_len);
         if (end > packet.len) return error.InvalidDnsResponse;
         while (offset < end) {
             const len: usize = packet[offset];
@@ -382,21 +318,19 @@ fn parseTxtResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
             offset += len;
         }
     }
-
     if (records == 0) {
         txt.deinit(allocator);
         return null;
     }
     try validateTxtOptions(txt.items);
-    return try txt.toOwnedSlice(allocator);
+    return txt.toOwnedSlice(allocator);
 }
 
 fn validateTxtOptions(txt: []const u8) Error!void {
     var it = std.mem.splitScalar(u8, txt, '&');
     while (it.next()) |pair| {
         if (pair.len == 0) return error.InvalidTxtRecord;
-        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse
-            return error.InvalidTxtRecord;
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidTxtRecord;
         const name = pair[0..eq];
         if (!(std.ascii.eqlIgnoreCase(name, "authSource") or
             std.ascii.eqlIgnoreCase(name, "replicaSet") or
@@ -407,12 +341,7 @@ fn validateTxtOptions(txt: []const u8) Error!void {
     }
 }
 
-fn synthesizeConnectionString(
-    allocator: Allocator,
-    parsed: SrvUri,
-    records: []const SrvRecord,
-    txt: ?[]const u8,
-) (Allocator.Error || Error)![]u8 {
+fn synthesizeConnectionString(allocator: Allocator, parsed: SrvUri, records: []const SrvRecord, txt: ?[]const u8) (Allocator.Error || Error)![]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, "mongodb://");
@@ -426,7 +355,6 @@ fn synthesizeConnectionString(
         defer allocator.free(host);
         try out.appendSlice(allocator, host);
     }
-
     if (parsed.had_slash) {
         try out.append(allocator, '/');
         if (parsed.database) |database| try out.appendSlice(allocator, database);
@@ -436,61 +364,39 @@ fn synthesizeConnectionString(
     var explicit_tls = false;
     var explicit_names: std.ArrayList([]const u8) = .empty;
     defer explicit_names.deinit(allocator);
-
     if (parsed.query) |query| {
         var it = std.mem.splitScalar(u8, query, '&');
         while (it.next()) |pair| {
             if (pair.len == 0) continue;
             const eq = std.mem.indexOfScalar(u8, pair, '=');
             const name = if (eq) |i| pair[0..i] else pair;
-            if (std.ascii.eqlIgnoreCase(name, "srvServiceName") or
-                std.ascii.eqlIgnoreCase(name, "srvMaxHosts"))
-            {
-                continue;
-            }
+            if (std.ascii.eqlIgnoreCase(name, "srvServiceName") or std.ascii.eqlIgnoreCase(name, "srvMaxHosts")) continue;
             try explicit_names.append(allocator, name);
-            if (std.ascii.eqlIgnoreCase(name, "tls") or
-                std.ascii.eqlIgnoreCase(name, "ssl"))
-            {
-                explicit_tls = true;
-            }
+            if (std.ascii.eqlIgnoreCase(name, "tls") or std.ascii.eqlIgnoreCase(name, "ssl")) explicit_tls = true;
             try appendQueryPair(allocator, &out, &has_any_option, pair);
         }
     }
-
     if (txt) |txt_options| {
         var it = std.mem.splitScalar(u8, txt_options, '&');
         while (it.next()) |pair| {
-            const eq = std.mem.indexOfScalar(u8, pair, '=') orelse
-                return error.InvalidTxtRecord;
+            const eq = std.mem.indexOfScalar(u8, pair, '=') orelse return error.InvalidTxtRecord;
             const name = pair[0..eq];
             if (containsOptionName(explicit_names.items, name)) continue;
             try appendQueryPair(allocator, &out, &has_any_option, pair);
         }
     }
-
-    if (!explicit_tls) {
-        try appendQueryPair(allocator, &out, &has_any_option, "tls=true");
-    }
-
+    if (!explicit_tls) try appendQueryPair(allocator, &out, &has_any_option, "tls=true");
     return out.toOwnedSlice(allocator);
 }
 
-fn appendQueryPair(
-    allocator: Allocator,
-    out: *std.ArrayList(u8),
-    has_any: *bool,
-    pair: []const u8,
-) Allocator.Error!void {
+fn appendQueryPair(allocator: Allocator, out: *std.ArrayList(u8), has_any: *bool, pair: []const u8) Allocator.Error!void {
     try out.append(allocator, if (has_any.*) '&' else '?');
     try out.appendSlice(allocator, pair);
     has_any.* = true;
 }
 
 fn containsOptionName(names: []const []const u8, needle: []const u8) bool {
-    for (names) |name| {
-        if (std.ascii.eqlIgnoreCase(name, needle)) return true;
-    }
+    for (names) |name| if (std.ascii.eqlIgnoreCase(name, needle)) return true;
     return false;
 }
 
@@ -515,15 +421,10 @@ fn labelCount(host: []const u8) usize {
 
 fn validServiceName(value: []const u8) bool {
     if (value.len == 0 or value.len > 62) return false;
-    if (!std.ascii.isAlphanumeric(value[0]) or
-        !std.ascii.isAlphanumeric(value[value.len - 1]))
-    {
-        return false;
-    }
+    if (!std.ascii.isAlphanumeric(value[0]) or !std.ascii.isAlphanumeric(value[value.len - 1])) return false;
     var saw_letter = false;
     for (value) |byte| {
-        if (std.ascii.isAlphabetic(byte)) saw_letter = true else if
-            (!std.ascii.isDigit(byte) and byte != '-') return false;
+        if (std.ascii.isAlphabetic(byte)) saw_letter = true else if (!std.ascii.isDigit(byte) and byte != '-') return false;
     }
     return saw_letter;
 }
@@ -566,56 +467,29 @@ test "SRV parent-domain validation" {
 }
 
 test "SRV URI rejects multiple hosts and ports before DNS" {
-    try std.testing.expectError(
-        error.MultipleHosts,
-        parseSrvUri(std.testing.allocator, "mongodb+srv://a.example,b.example"),
-    );
-    try std.testing.expectError(
-        error.PortNotAllowed,
-        parseSrvUri(std.testing.allocator, "mongodb+srv://a.example:27017"),
-    );
+    try std.testing.expectError(error.MultipleHosts, parseSrvUri(std.testing.allocator, "mongodb+srv://a.example,b.example"));
+    try std.testing.expectError(error.PortNotAllowed, parseSrvUri(std.testing.allocator, "mongodb+srv://a.example:27017"));
 }
 
 test "SRV synthesis merges TXT defaults and enables TLS" {
-    var parsed = try parseSrvUri(
-        std.testing.allocator,
-        "mongodb+srv://alice:secret@cluster.example/app?authSource=explicit&srvMaxHosts=2",
-    );
+    var parsed = try parseSrvUri(std.testing.allocator, "mongodb+srv://alice:secret@cluster.example/app?authSource=explicit&srvMaxHosts=2");
     defer parsed.deinit(std.testing.allocator);
-
-    var records = [_]SrvRecord{
+    const records = [_]SrvRecord{
         .{ .host = @constCast("db1.example"), .port = 27017 },
         .{ .host = @constCast("db2.example"), .port = 27018 },
     };
-    const result = try synthesizeConnectionString(
-        std.testing.allocator,
-        parsed,
-        &records,
-        "authSource=txt&replicaSet=rs0",
-    );
+    const result = try synthesizeConnectionString(std.testing.allocator, parsed, &records, "authSource=txt&replicaSet=rs0");
     defer std.testing.allocator.free(result);
-
-    try std.testing.expectEqualStrings(
-        "mongodb://alice:secret@db1.example:27017,db2.example:27018/app?authSource=explicit&replicaSet=rs0&tls=true",
-        result,
-    );
+    try std.testing.expectEqualStrings("mongodb://alice:secret@db1.example:27017,db2.example:27018/app?authSource=explicit&replicaSet=rs0&tls=true", result);
 }
 
 test "TXT records accept only SRV defaults" {
     try validateTxtOptions("authSource=admin&replicaSet=rs0&loadBalanced=false");
-    try std.testing.expectError(
-        error.InvalidTxtOption,
-        validateTxtOptions("tls=false"),
-    );
+    try std.testing.expectError(error.InvalidTxtOption, validateTxtOptions("tls=false"));
 }
 
 test "DNS query encodes SRV qname and type" {
-    const packet = try encodeDnsQuery(
-        std.testing.allocator,
-        0x1234,
-        "_mongodb._tcp.example.com",
-        dns_type_srv,
-    );
+    const packet = try encodeDnsQuery(std.testing.allocator, 0x1234, "_mongodb._tcp.example.com", dns_type_srv);
     defer std.testing.allocator.free(packet);
     try std.testing.expectEqual(@as(u16, 0x1234), std.mem.readInt(u16, packet[0..2], .big));
     try std.testing.expectEqual(@as(u16, dns_type_srv), std.mem.readInt(u16, packet[packet.len - 4 .. packet.len - 2], .big));
