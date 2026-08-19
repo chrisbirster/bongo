@@ -170,13 +170,19 @@ pub const Connection = struct {
         var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
         var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
         switch (try Io.select(self.io, .{
+            .operation = &operation,
+            .timer = &timer,
+        })) {
             .operation => |result| {
                 _ = timer.cancel(self.io) catch {};
                 return result;
             },
             .timer => |result| {
                 try result;
-                _ = operation.cancel(self.io) catch {};
+                const canceled = operation.cancel(self.io);
+                if (canceled) |late_response| {
+                    allocator.free(late_response);
+                } else |_| {}
                 return switch (limit.source) {
                     .operation => error.OperationTimeout,
                     .socket => error.SocketTimeout,
