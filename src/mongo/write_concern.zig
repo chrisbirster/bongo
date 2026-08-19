@@ -94,3 +94,47 @@ test "write concern omits zero timeout and optional journal" {
     try std.testing.expect((try bson.Reader.get(document, "j")) == null);
     try std.testing.expect((try bson.Reader.get(document, "wtimeout")) == null);
 }
+
+test "write concern timeout uses exact BSON integer width boundaries" {
+    const allocator = std.testing.allocator;
+    const int32_max = @as(u64, std.math.maxInt(i32));
+
+    const int32_document = try encode(
+        allocator,
+        .{
+            .w = .majority,
+            .wtimeout_ms = int32_max,
+        },
+    );
+    defer allocator.free(int32_document);
+
+    try std.testing.expectEqual(
+        std.math.maxInt(i32),
+        (try bson.Reader.get(int32_document, "wtimeout")).?.int32,
+    );
+
+    const int64_document = try encode(
+        allocator,
+        .{
+            .w = .majority,
+            .wtimeout_ms = int32_max + 1,
+        },
+    );
+    defer allocator.free(int64_document);
+
+    try std.testing.expectEqual(
+        @as(i64, std.math.maxInt(i32)) + 1,
+        (try bson.Reader.get(int64_document, "wtimeout")).?.int64,
+    );
+
+    try std.testing.expectError(
+        error.UnsupportedInteger,
+        encode(
+            allocator,
+            .{
+                .w = .majority,
+                .wtimeout_ms = @as(u64, std.math.maxInt(i64)) + 1,
+            },
+        ),
+    );
+}
