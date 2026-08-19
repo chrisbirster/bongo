@@ -27,7 +27,7 @@ pub const Budget = struct {
         if (raw_ms == 0) return .{};
         const milliseconds = std.math.cast(i64, raw_ms) orelse
             return error.InvalidTimeout;
-        const now = try Io.Clock.Timestamp.now(io, .awake);
+        const now = Io.Clock.Timestamp.now(io, .awake);
         const duration: Io.Clock.Duration = .{
             .raw = Io.Duration.fromMilliseconds(milliseconds),
             .clock = .awake,
@@ -43,7 +43,7 @@ pub const Budget = struct {
         io: Io,
         socket_timeout_ms: ?u32,
     ) !?Limit {
-        const now = try Io.Clock.Timestamp.now(io, .awake);
+        const now = Io.Clock.Timestamp.now(io, .awake);
 
         const operation_deadline = self.deadline;
         if (operation_deadline) |deadline| {
