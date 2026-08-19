@@ -21,6 +21,8 @@ pub const listCollections = @import("mongo/list_collections.zig").listCollection
 pub const CreateIndexResult = @import("mongo/index_admin.zig").CreateIndexResult;
 pub const createIndex = @import("mongo/index_admin.zig").createIndex;
 pub const dropIndex = @import("mongo/index_admin.zig").dropIndex;
+pub const ListIndexesCursor = @import("mongo/list_indexes.zig").Cursor;
+pub const listIndexes = @import("mongo/list_indexes.zig").listIndexes;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -67,6 +69,8 @@ pub const mongo = struct {
     pub const CreateIndexResult = @import("mongo/index_admin.zig").CreateIndexResult;
     pub const createIndex = @import("mongo/index_admin.zig").createIndex;
     pub const dropIndex = @import("mongo/index_admin.zig").dropIndex;
+    pub const ListIndexesCursor = @import("mongo/list_indexes.zig").Cursor;
+    pub const listIndexes = @import("mongo/list_indexes.zig").listIndexes;
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -119,4 +123,5 @@ test {
     _ = @import("mongo/collection_admin.zig");
     _ = @import("mongo/list_collections.zig");
     _ = @import("mongo/index_admin.zig");
+    _ = @import("mongo/list_indexes.zig");
 }
