@@ -104,6 +104,8 @@ pub const Cursor = struct {
     }
 
     pub fn deinit(self: *Cursor) void {
+        // deinit cannot report cleanup failures. Call close() first when the
+        // caller needs to observe a killCursors error.
         self.close() catch {};
         self.allocator.free(self.response_bytes);
         self.allocator.free(self.database_name);
@@ -288,4 +290,210 @@ fn commandSucceeded(value: bson.Value) bool {
         .int64 => |number| number == 1,
         else => false,
     };
+}
+
+fn expectCursorError(expected: anyerror, body: anytype) !void {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        body,
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(
+        expected,
+        parseCursorResponse(
+            response,
+            41,
+            "firstBatch",
+            "test",
+            "users",
+        ),
+    );
+}
+
+test "command cursor parses valid cursor batch" {
+    const allocator = std.testing.allocator;
+    const Document = struct { name: []const u8 };
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .cursor = .{
+                .id = @as(i64, 7),
+                .ns = "test.users",
+                .firstBatch = [_]Document{.{ .name = "Bongo" }},
+            },
+            .ok = @as(f64, 1.0),
+        },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    const parsed = try parseCursorResponse(
+        response,
+        41,
+        "firstBatch",
+        "test",
+        "users",
+    );
+    try std.testing.expectEqual(@as(i64, 7), parsed.cursor_id);
+    try std.testing.expectEqualStrings("test.users", parsed.namespace_name);
+
+    var reader = try bson.Reader.init(parsed.batch);
+    const document = (try nextBatchDocument(&reader)).?;
+    try std.testing.expectEqualStrings(
+        "Bongo",
+        (try bson.Reader.get(document, "name")).?.string,
+    );
+    try std.testing.expect((try nextBatchDocument(&reader)) == null);
+}
+
+test "command cursor rejects response id and command failure" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{ .ok = @as(f64, 1.0) },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(
+        error.UnexpectedResponse,
+        parseCursorResponse(
+            response,
+            42,
+            "firstBatch",
+            "test",
+            "users",
+        ),
+    );
+
+    try expectCursorError(error.CommandFailed, .{ .ok = @as(i32, 0) });
+}
+
+test "command cursor rejects invalid cursor id and namespace fields" {
+    try expectCursorError(error.MissingCursor, .{ .ok = @as(i32, 1) });
+    try expectCursorError(
+        error.InvalidCursor,
+        .{ .cursor = "not a document", .ok = @as(i32, 1) },
+    );
+    try expectCursorError(
+        error.MissingCursorId,
+        .{
+            .cursor = .{
+                .ns = "test.users",
+                .firstBatch = [_]i32{},
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+    try expectCursorError(
+        error.InvalidCursorId,
+        .{
+            .cursor = .{
+                .id = @as(i32, 0),
+                .ns = "test.users",
+                .firstBatch = [_]i32{},
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+    try expectCursorError(
+        error.MissingNamespace,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .firstBatch = [_]i32{},
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+    try expectCursorError(
+        error.InvalidNamespace,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .ns = @as(i32, 1),
+                .firstBatch = [_]i32{},
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+    try expectCursorError(
+        error.UnexpectedNamespace,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .ns = "test.other",
+                .firstBatch = [_]i32{},
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+}
+
+test "command cursor rejects missing invalid and non-document batches" {
+    try expectCursorError(
+        error.MissingBatch,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .ns = "test.users",
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+    try expectCursorError(
+        error.InvalidBatch,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .ns = "test.users",
+                .firstBatch = "not an array",
+            },
+            .ok = @as(i32, 1),
+        },
+    );
+
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .cursor = .{
+                .id = @as(i64, 0),
+                .ns = "test.users",
+                .firstBatch = [_]i32{1},
+            },
+            .ok = @as(i32, 1),
+        },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    const parsed = try parseCursorResponse(
+        response,
+        41,
+        "firstBatch",
+        "test",
+        "users",
+    );
+    var reader = try bson.Reader.init(parsed.batch);
+    try std.testing.expectError(
+        error.InvalidBatchDocument,
+        nextBatchDocument(&reader),
+    );
+}
+
+test "command cursor request id wraps to one" {
+    var client = Client{
+        .allocator = undefined,
+        .connection = undefined,
+        .next_request_id = std.math.maxInt(i32),
+        .write_concern = null,
+        .read_concern = null,
+    };
+
+    try std.testing.expectEqual(std.math.maxInt(i32), takeRequestId(&client));
+    try std.testing.expectEqual(@as(i32, 1), client.next_request_id);
 }

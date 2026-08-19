@@ -1,3 +1,4 @@
+const std = @import("std");
 const bson = @import("../bson.zig");
 const client_mod = @import("client.zig");
 const op_msg = @import("op_msg.zig");
@@ -67,4 +68,84 @@ fn commandSucceeded(value: bson.Value) bool {
         .int64 => |number| number == 1,
         else => false,
     };
+}
+
+test "command response accepts successful reply" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{ .ok = @as(i32, 1), .value = @as(i32, 7) },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    const body = try validate(response, 41);
+    try std.testing.expectEqual(
+        @as(i32, 7),
+        (try bson.Reader.get(body, "value")).?.int32,
+    );
+}
+
+test "command response rejects mismatched response id" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{ .ok = @as(f64, 1.0) },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(
+        error.UnexpectedResponse,
+        validate(response, 42),
+    );
+}
+
+test "command response rejects missing failed and invalid ok" {
+    const allocator = std.testing.allocator;
+
+    const missing = try op_msg.encodeCommand(
+        allocator,
+        .{ .value = @as(i32, 1) },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(missing);
+    try std.testing.expectError(error.CommandFailed, validate(missing, 41));
+
+    const failed = try op_msg.encodeCommand(
+        allocator,
+        .{ .ok = @as(i32, 0) },
+        .{ .request_id = 91, .response_to = 41 },
+    );
+    defer allocator.free(failed);
+    try std.testing.expectError(error.CommandFailed, validate(failed, 41));
+
+    const invalid = try op_msg.encodeCommand(
+        allocator,
+        .{ .ok = "yes" },
+        .{ .request_id = 92, .response_to = 41 },
+    );
+    defer allocator.free(invalid);
+    try std.testing.expectError(error.CommandFailed, validate(invalid, 41));
+}
+
+test "command response surfaces write concern error" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .ok = @as(f64, 1.0),
+            .writeConcernError = .{
+                .code = @as(i32, 64),
+                .errmsg = "write concern timeout",
+            },
+        },
+        .{ .request_id = 90, .response_to = 41 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(
+        error.WriteConcernFailed,
+        validate(response, 41),
+    );
 }
