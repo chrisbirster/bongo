@@ -26,6 +26,23 @@ pub fn build(b: *std.Build) void {
     );
     integration_test_step.dependOn(&run_integration_tests.step);
 
+    const tls_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/integration/41_tls.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bongo", .module = mod },
+            },
+        }),
+    });
+    const run_tls_integration_tests = b.addRunArtifact(tls_integration_tests);
+    const tls_integration_test_step = b.step(
+        "tls-integration-test",
+        "Run verified MongoDB TLS + SCRAM integration test",
+    );
+    tls_integration_test_step.dependOn(&run_tls_integration_tests.step);
+
     const exe = b.addExecutable(.{
         .name = "bongo",
         .root_module = b.createModule(.{
@@ -41,7 +58,7 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
+    run_step.dependOn(b.getInstallStep());
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
