@@ -5,6 +5,11 @@ const Io = std.Io;
 const net = Io.net;
 const Allocator = std.mem.Allocator;
 
+const TimedTaskResult = union(enum) {
+    operation: anyerror!void,
+    timer: anyerror!void,
+};
+
 pub const Connection = struct {
     io: Io,
     stream: net.Stream,
@@ -118,19 +123,17 @@ pub const Connection = struct {
             else => |e| return e,
         } orelse return self.sendRaw(bytes);
 
-        var operation = self.io.async(sendRaw, .{ self, bytes });
-        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try self.io.select(.{
-            .operation = &operation,
-            .timer = &timer,
-        })) {
-            .operation => |result| {
-                _ = timer.cancel(self.io) catch {};
-                return result;
-            },
+        var result_buffer: [2]TimedTaskResult = undefined;
+        var select: Io.Select(TimedTaskResult) = .init(self.io, &result_buffer);
+        defer select.cancelDiscard();
+
+        try select.concurrent(.operation, sendTask, .{ self, bytes });
+        try select.concurrent(.timer, waitUntilTask, .{ self.io, limit.deadline });
+
+        switch (try select.await()) {
+            .operation => |result| return result,
             .timer => |result| {
                 try result;
-                _ = operation.cancel(self.io) catch {};
                 return switch (limit.source) {
                     .operation => error.OperationTimeout,
                     .socket => error.SocketTimeout,
@@ -150,28 +153,53 @@ pub const Connection = struct {
             else => |e| return e,
         } orelse return self.receiveRaw(allocator, max_message_size);
 
-        var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
-        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try self.io.select(.{
-            .operation = &operation,
-            .timer = &timer,
-        })) {
+        var response: ?[]u8 = null;
+        var result_buffer: [2]TimedTaskResult = undefined;
+        var select: Io.Select(TimedTaskResult) = .init(self.io, &result_buffer);
+        defer {
+            select.cancelDiscard();
+            if (response) |bytes| allocator.free(bytes);
+        }
+
+        try select.concurrent(
+            .operation,
+            receiveTask,
+            .{ self, allocator, max_message_size, &response },
+        );
+        try select.concurrent(.timer, waitUntilTask, .{ self.io, limit.deadline });
+
+        switch (try select.await()) {
             .operation => |result| {
-                _ = timer.cancel(self.io) catch {};
-                return result;
+                try result;
+                const bytes = response orelse unreachable;
+                response = null;
+                return bytes;
             },
             .timer => |result| {
                 try result;
-                const canceled = operation.cancel(self.io);
-                if (canceled) |late_response| {
-                    allocator.free(late_response);
-                } else |_| {}
                 return switch (limit.source) {
                     .operation => error.OperationTimeout,
                     .socket => error.SocketTimeout,
                 };
             },
         }
+    }
+
+    fn sendTask(self: *Connection, bytes: []const u8) anyerror!void {
+        try self.sendRaw(bytes);
+    }
+
+    fn receiveTask(
+        self: *Connection,
+        allocator: Allocator,
+        max_message_size: usize,
+        response: *?[]u8,
+    ) anyerror!void {
+        response.* = try self.receiveRaw(allocator, max_message_size);
+    }
+
+    fn waitUntilTask(io: Io, deadline: Io.Clock.Timestamp) anyerror!void {
+        try waitUntil(io, deadline);
     }
 
     fn sendRaw(self: *Connection, bytes: []const u8) !void {
