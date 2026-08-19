@@ -9,27 +9,51 @@ pub const Connection = struct {
     io: Io,
     stream: net.Stream,
     compressor: ?compression.Compressor = null,
+    socket_timeout_ms: ?u32 = null,
 
     pub const Error = error{
         InvalidMessageLength,
         MessageTooLarge,
+        ConnectTimeout,
+        SocketTimeout,
+    };
+
+    pub const Options = struct {
+        /// Time allowed for DNS/TCP connection establishment. `0` means no
+        /// timeout, matching MongoDB URI semantics.
+        connect_timeout_ms: ?u32 = null,
+        /// Per socket send/receive limit. `0` means no timeout.
+        socket_timeout_ms: ?u32 = null,
     };
 
     /// Until `hello` tells us MongoDB's actual maxMessageSizeBytes,
     /// keep a defensive local limit.
     pub const default_max_message_size: usize = 48 * 1024 * 1024;
 
-    pub fn connect(
+    pub fn connect(io: Io, host: []const u8, port: u16) !Connection {
+        return connectWithOptions(io, host, port, .{});
+    }
+
+    pub fn connectWithOptions(
         io: Io,
         host: []const u8,
         port: u16,
+        options: Options,
     ) !Connection {
-        const address = try net.IpAddress.parse(host, port);
-        const stream = try address.connect(io, .{
+        const host_name = try net.HostName.init(host);
+        const stream = host_name.connect(io, port, .{
             .mode = .stream,
             .protocol = .tcp,
-        });
-        return .{ .io = io, .stream = stream };
+            .timeout = timeoutFromMs(options.connect_timeout_ms),
+        }) catch |err| switch (err) {
+            error.Timeout => return error.ConnectTimeout,
+            else => |e| return e,
+        };
+        return .{
+            .io = io,
+            .stream = stream,
+            .socket_timeout_ms = options.socket_timeout_ms,
+        };
     }
 
     pub fn deinit(self: *Connection) void {
@@ -37,26 +61,17 @@ pub const Connection = struct {
         self.* = undefined;
     }
 
-    /// Enable the negotiated compressor for subsequent application commands.
-    /// Authentication/hello code calls this only after the handshake is done,
-    /// so MongoDB's uncompressed-handshake requirement is preserved.
     pub fn setCompressor(self: *Connection, compressor: ?compression.Compressor) void {
         self.compressor = compressor;
     }
 
-    /// Send one MongoDB wire message and read one MongoDB wire response.
-    /// Caller owns the returned slice.
     pub fn request(
         self: *Connection,
         allocator: Allocator,
         request_bytes: []const u8,
     ) ![]u8 {
         if (self.compressor) |compressor| {
-            const compressed = try compression.compressMessage(
-                allocator,
-                request_bytes,
-                compressor,
-            );
+            const compressed = try compression.compressMessage(allocator, request_bytes, compressor);
             defer allocator.free(compressed);
             try self.send(compressed);
         } else {
@@ -66,13 +81,71 @@ pub const Connection = struct {
     }
 
     pub fn send(self: *Connection, bytes: []const u8) !void {
+        const timeout_ms = activeTimeout(self.socket_timeout_ms) orelse
+            return self.sendRaw(bytes);
+
+        var operation = self.io.async(sendRaw, .{ self, bytes });
+        var timer = self.io.async(Io.sleep, .{
+            self.io,
+            Io.Duration.fromMilliseconds(timeout_ms),
+            Io.Clock.awake,
+        });
+
+        switch (try Io.select(self.io, .{
+            .operation = &operation,
+            .timer = &timer,
+        })) {
+            .operation => |result| {
+                _ = timer.cancel(self.io) catch {};
+                return result;
+            },
+            .timer => |result| {
+                try result;
+                _ = operation.cancel(self.io) catch {};
+                return error.SocketTimeout;
+            },
+        }
+    }
+
+    pub fn receive(
+        self: *Connection,
+        allocator: Allocator,
+        max_message_size: usize,
+    ) ![]u8 {
+        const timeout_ms = activeTimeout(self.socket_timeout_ms) orelse
+            return self.receiveRaw(allocator, max_message_size);
+
+        var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
+        var timer = self.io.async(Io.sleep, .{
+            self.io,
+            Io.Duration.fromMilliseconds(timeout_ms),
+            Io.Clock.awake,
+        });
+
+        switch (try Io.select(self.io, .{
+            .operation = &operation,
+            .timer = &timer,
+        })) {
+            .operation => |result| {
+                _ = timer.cancel(self.io) catch {};
+                return result;
+            },
+            .timer => |result| {
+                try result;
+                _ = operation.cancel(self.io) catch {};
+                return error.SocketTimeout;
+            },
+        }
+    }
+
+    fn sendRaw(self: *Connection, bytes: []const u8) !void {
         var write_buffer: [4096]u8 = undefined;
         var stream_writer = self.stream.writer(self.io, &write_buffer);
         try stream_writer.interface.writeAll(bytes);
         try stream_writer.interface.flush();
     }
 
-    pub fn receive(
+    fn receiveRaw(
         self: *Connection,
         allocator: Allocator,
         max_message_size: usize,
@@ -101,4 +174,23 @@ pub const Connection = struct {
         allocator.free(message);
         return decompressed;
     }
+
+    fn timeoutFromMs(value: ?u32) Io.Timeout {
+        const milliseconds = activeTimeout(value) orelse return .none;
+        return .{ .duration = .{
+            .raw = Io.Duration.fromMilliseconds(milliseconds),
+            .clock = .awake,
+        } };
+    }
+
+    fn activeTimeout(value: ?u32) ?u32 {
+        const milliseconds = value orelse return null;
+        return if (milliseconds == 0) null else milliseconds;
+    }
 };
+
+test "network timeout option maps zero to unlimited" {
+    try std.testing.expect(Connection.activeTimeout(null) == null);
+    try std.testing.expect(Connection.activeTimeout(0) == null);
+    try std.testing.expectEqual(@as(u32, 5000), Connection.activeTimeout(5000).?);
+}
