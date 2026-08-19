@@ -1,8 +1,10 @@
-# Collection and index administration
+# Collection, index, and database administration
 
-Bongo exposes the MongoDB management commands implemented so far as top-level driver helpers operating on `Database` or `Collection` handles.
+Bongo exposes implemented MongoDB management commands as top-level helpers operating on `Client`, `Database`, or `Collection` handles.
 
-## Create a collection
+## Collections
+
+Create a collection:
 
 ```zig
 const database = client.database("app");
@@ -11,27 +13,25 @@ try bongo.createCollection(database, "events", .{});
 
 Collection options are flattened into MongoDB's `create` command, so supported BSON options can be supplied without Bongo hard-coding every server option.
 
-## List collections
-
-`listCollections()` returns a cursor of raw collection-information BSON documents:
+List collections:
 
 ```zig
-var cursor = try bongo.listCollections(
+var collections = try bongo.listCollections(
     database,
     .{
         .filter = .{ .name = "events" },
         .nameOnly = true,
     },
 );
-defer cursor.deinit();
+defer collections.deinit();
 
-while (try cursor.next()) |document| {
+while (try collections.next()) |document| {
     const name = (try bongo.bson.Reader.get(document, "name")).?.string;
     std.debug.print("{s}\n", .{name});
 }
 ```
 
-## Rename and drop collections
+Rename and drop collections:
 
 ```zig
 const events = database.collection("events");
@@ -41,7 +41,9 @@ try bongo.dropCollection(database.collection("archived_events"));
 
 The rename boolean controls MongoDB's `dropTarget` option. `renameCollection` runs against `admin` internally using fully qualified namespaces. Dropping a collection is idempotent with current MongoDB behavior.
 
-## Create an index
+## Indexes
+
+Create an index:
 
 ```zig
 const users = database.collection("users");
@@ -59,20 +61,16 @@ const result = try bongo.createIndex(
 
 The key document may contain one or multiple fields. Index options are flattened into the index specification. `CreateIndexResult` exposes MongoDB's optional before/after index counts and automatic-collection-creation flag.
 
-## Drop indexes
+Drop indexes by name, key specification, or MongoDB's special all-droppable selector:
 
 ```zig
 try bongo.dropIndex(users, "first_last_unique");
 try bongo.dropIndex(users, "*");
 ```
 
-`dropIndex()` wraps MongoDB's `dropIndexes` command. The selector is BSON-encoded, so a name or key specification can be supplied. The special `"*"` selector asks MongoDB to remove all droppable non-`_id` indexes. Configured client write concern is included automatically, and server failures are returned as errors.
+Configured client write concern is included automatically, and server failures are returned as errors.
 
-MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/dropIndexes/>
-
-## List indexes
-
-`listIndexes()` returns a cursor of raw index-information BSON documents:
+List indexes as raw BSON metadata:
 
 ```zig
 var indexes = try bongo.listIndexes(
@@ -89,13 +87,36 @@ while (try indexes.next()) |document| {
 }
 ```
 
-The raw documents preserve MongoDB's key specification and index options. The command cursor automatically uses `getMore` when a batch is exhausted.
+`listIndexes()` uses the shared command cursor and automatically issues `getMore` if index metadata spans batches.
 
-MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/listIndexes/>
+MongoDB references:
+
+- <https://www.mongodb.com/docs/manual/reference/command/dropIndexes/>
+- <https://www.mongodb.com/docs/manual/reference/command/listIndexes/>
+
+## Databases
+
+`listDatabases()` runs against MongoDB's `admin` database and returns an owned result containing raw database-information documents:
+
+```zig
+var databases = try bongo.listDatabases(
+    &client,
+    .{ .nameOnly = true },
+);
+defer databases.deinit();
+
+while (try databases.next()) |document| {
+    const name = (try bongo.bson.Reader.get(document, "name")).?.string;
+    std.debug.print("{s}\n", .{name});
+}
+```
+
+Options are flattened into the command, so MongoDB fields such as `filter`, `nameOnly`, `authorizedDatabases`, and `comment` can be supplied. Each document returned by `next()` borrows from the result's response buffer and remains valid until `ListDatabasesResult.deinit()`.
+
+MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/listDatabases/>
 
 ## What is not implemented yet
 
-The remaining database-administration milestones in this group are:
+The remaining database-administration milestone in this group is:
 
-- #34 — `listDatabases`
 - #35 — `dropDatabase`
