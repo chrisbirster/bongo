@@ -6,16 +6,11 @@ The issue list is the detailed source of truth. This document is the human-sized
 
 ## Current position
 
-Bongo has reached **BONGO-0031**: the driver now has a real application-facing API for authenticated single-server CRUD, cursors, common query options, aggregation, collection management, and index creation.
+Bongo has reached **BONGO-0035**. The driver now has an application-facing API for authenticated single-server CRUD, cursors, common query options, aggregation, collection administration, index administration, and database discovery/deletion.
 
-The immediate next issues are:
+The next issue is #36 — a generic `runCommand` escape hatch for commands that do not yet have a high-level Bongo wrapper.
 
-- #32 — drop indexes
-- #33 — list indexes
-- #34 — list databases
-- #35 — drop databases
-
-That means the project is no longer in the "can Zig speak MongoDB wire bytes?" stage. It is now an early driver with a substantial single-server command surface.
+Before later roadmap tickets are implemented mechanically, their scope should be compared with the current code. Some tickets were drafted before earlier milestones grew a fuller public `Client`, `Database`, and `Collection` model, so already-satisfied work should be updated or closed rather than duplicated.
 
 ## Phase map
 
@@ -63,44 +58,33 @@ This phase includes cursor continuation/cleanup, atomic find-and-modify operatio
 
 ### 4. Querying and command features — implemented
 
-This layer adds:
-
-- projection, sort, skip, and limit;
-- advanced find options;
-- read concern;
-- write concern;
-- read-preference modeling;
-- aggregation pipelines;
-- explain plans.
+This layer adds projection, sort, skip, limit, advanced find options, read concern, write concern, read-preference modeling, aggregation pipelines, and explain plans.
 
 Read preference is currently configuration/modeling only. Actual topology-aware server selection comes later.
 
-### 5. Collection and index administration — in progress
+### 5. Collection, index, and database administration — implemented
 
-Implemented:
+The current administration surface includes:
 
-- create collection;
-- list collections;
-- rename collection;
-- drop collection;
-- create index.
-
-Next (#32-#35):
-
-- drop index;
-- list indexes;
+- create, list, rename, and drop collections;
+- create, list, and drop indexes;
 - list databases;
-- drop database.
+- drop databases.
 
-### 6. Client configuration and secure connectivity — planned
+Cursor-backed collection/index discovery reuses Bongo's `getMore` machinery, while database discovery owns its top-level response buffer explicitly.
 
-Later roadmap work adds the pieces expected from a general-purpose MongoDB connection layer, including:
+### 6. Command escape hatch and client configuration — planned
 
-- typed client options;
+The next work begins with:
+
+- #36 — generic `runCommand`;
+- typed client configuration and connection options;
 - `mongodb://` URI parsing and validation;
 - `mongodb+srv://` discovery;
 - TLS;
 - timeouts.
+
+Existing client-object-model tickets should be reconciled with the `Client`, `Database`, and `Collection` API that is already in use before new code is added.
 
 ### 7. Pooling, topology, and server selection — planned
 

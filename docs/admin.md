@@ -1,6 +1,6 @@
 # Collection, index, and database administration
 
-Bongo exposes implemented MongoDB management commands as top-level helpers operating on `Client`, `Database`, or `Collection` handles.
+Bongo exposes MongoDB management commands as top-level helpers operating on `Client`, `Database`, or `Collection` handles.
 
 ## Collections
 
@@ -11,9 +11,7 @@ const database = client.database("app");
 try bongo.createCollection(database, "events", .{});
 ```
 
-Collection options are flattened into MongoDB's `create` command, so supported BSON options can be supplied without Bongo hard-coding every server option.
-
-List collections:
+List collections as raw BSON metadata:
 
 ```zig
 var collections = try bongo.listCollections(
@@ -39,7 +37,7 @@ try bongo.renameCollection(events, "archived_events", false);
 try bongo.dropCollection(database.collection("archived_events"));
 ```
 
-The rename boolean controls MongoDB's `dropTarget` option. `renameCollection` runs against `admin` internally using fully qualified namespaces. Dropping a collection is idempotent with current MongoDB behavior.
+Collection options are flattened into MongoDB's command documents where the API accepts an options struct. `renameCollection` runs against `admin` internally using fully qualified namespaces. Dropping a collection is idempotent with current MongoDB behavior.
 
 ## Indexes
 
@@ -59,8 +57,6 @@ const result = try bongo.createIndex(
 );
 ```
 
-The key document may contain one or multiple fields. Index options are flattened into the index specification. `CreateIndexResult` exposes MongoDB's optional before/after index counts and automatic-collection-creation flag.
-
 Drop indexes by name, key specification, or MongoDB's special all-droppable selector:
 
 ```zig
@@ -68,9 +64,7 @@ try bongo.dropIndex(users, "first_last_unique");
 try bongo.dropIndex(users, "*");
 ```
 
-Configured client write concern is included automatically, and server failures are returned as errors.
-
-List indexes as raw BSON metadata:
+List index metadata:
 
 ```zig
 var indexes = try bongo.listIndexes(
@@ -87,7 +81,7 @@ while (try indexes.next()) |document| {
 }
 ```
 
-`listIndexes()` uses the shared command cursor and automatically issues `getMore` if index metadata spans batches.
+`listIndexes()` uses the shared command cursor and automatically issues `getMore` if metadata spans batches. Configured write concern is included by index commands that support it, and server failures are returned as errors.
 
 MongoDB references:
 
@@ -96,7 +90,7 @@ MongoDB references:
 
 ## Databases
 
-`listDatabases()` runs against MongoDB's `admin` database and returns an owned result containing raw database-information documents:
+List accessible databases:
 
 ```zig
 var databases = try bongo.listDatabases(
@@ -111,12 +105,24 @@ while (try databases.next()) |document| {
 }
 ```
 
-Options are flattened into the command, so MongoDB fields such as `filter`, `nameOnly`, `authorizedDatabases`, and `comment` can be supplied. Each document returned by `next()` borrows from the result's response buffer and remains valid until `ListDatabasesResult.deinit()`.
+`listDatabases()` runs against MongoDB's `admin` database. Options such as `filter`, `nameOnly`, `authorizedDatabases`, and `comment` are flattened into the command. Each document returned by `next()` borrows from `ListDatabasesResult` and remains valid until that result is deinitialized.
 
-MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/listDatabases/>
+Drop a database through its `Database` handle:
 
-## What is not implemented yet
+```zig
+const scratch = client.database("scratch");
+try bongo.dropDatabase(scratch);
+```
 
-The remaining database-administration milestone in this group is:
+Bongo validates that the database name is non-empty, includes configured client write concern, validates the MongoDB response, and surfaces command/write-concern failures. Dropping a database removes the database and its collections/indexes; user-management behavior remains MongoDB server behavior rather than a Bongo abstraction.
 
-- #35 — `dropDatabase`
+MongoDB references:
+
+- <https://www.mongodb.com/docs/manual/reference/command/listDatabases/>
+- <https://www.mongodb.com/docs/manual/reference/command/dropDatabase/>
+
+## Ownership summary
+
+- `listCollections()` and `listIndexes()` return cursors whose documents borrow from the current cursor batch.
+- `listDatabases()` returns an owned response whose documents borrow from that response until `deinit()`.
+- create, rename, drop, and index mutation helpers do not return borrowed response data.

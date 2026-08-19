@@ -63,7 +63,8 @@ fn run(io: std.Io, allocator: std.mem.Allocator) !void {
 | Read configuration | read concern and read-preference modeling |
 | Aggregation | multi-stage `aggregate` cursors and `explain` |
 | Collections | create, list, rename, drop |
-| Indexes | `createIndex` |
+| Indexes | create, list, drop |
+| Databases | list and drop |
 | Testing | unit tests plus integration tests against a real MongoDB server |
 
 ## Important limitations
@@ -78,7 +79,6 @@ Bongo deliberately exposes unfinished boundaries instead of pretending to be a c
 - Sessions and transactions are not implemented yet.
 - Typed BSON struct decoding is planned in #78.
 - SCRAM-SHA-256 password preparation currently accepts printable ASCII passwords; full SASLprep support is still incomplete.
-- `dropIndex`, `listIndexes`, `listDatabases`, and `dropDatabase` are the next management milestones (#32-#35).
 
 ## Documentation
 
@@ -87,7 +87,7 @@ Start here:
 - [Getting started](docs/getting-started.md) — connect, choose a collection, and understand ownership.
 - [CRUD](docs/crud.md) — inserts, reads, updates, replacements, deletes, upserts, and bulk writes.
 - [Querying](docs/querying.md) — filters, options, cursors, aggregation, explain, and concerns.
-- [Collection and index administration](docs/admin.md) — create/list/rename/drop collections and create indexes.
+- [Administration](docs/admin.md) — collection, index, and database management.
 - [Architecture](docs/architecture.md) — how the public API reaches BSON, OP_MSG, and MongoDB.
 - [Testing and quality](docs/testing.md) — Bongo Style expectations, negative-space testing, assertions, errors, and merge gates.
 - [MongoDB cursors](docs/cursors.md) — `firstBatch`, `getMore`, cleanup, and document lifetimes.
