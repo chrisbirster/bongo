@@ -104,8 +104,8 @@ test "dropDatabase encodes configured write concern" {
     );
     try std.testing.expect((try bson.Reader.get(concern, "j")).?.boolean);
     try std.testing.expectEqual(
-        @as(i64, 5000),
-        (try bson.Reader.get(concern, "wtimeout")).?.int64,
+        @as(i32, 5000),
+        (try bson.Reader.get(concern, "wtimeout")).?.int32,
     );
 }
 
