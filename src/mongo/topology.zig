@@ -16,9 +16,12 @@ pub const ServerDescription = struct {
     secondary: bool = false,
     max_wire_version: ?i32 = null,
     logical_session_timeout_minutes: ?i64 = null,
+    replica_set_name: ?[]const u8 = null,
+    is_mongos: bool = false,
+    supports_transactions: bool = false,
 
     pub fn usableForWrites(self: ServerDescription) bool {
-        return self.is_writable_primary;
+        return self.is_writable_primary or self.is_mongos;
     }
 };
 
@@ -80,6 +83,26 @@ pub fn hello(
             else => return error.InvalidHelloField,
         };
     }
+    if (try bson.Reader.get(body, "setName")) |value| {
+        result.replica_set_name = switch (value) {
+            .string => |v| v,
+            else => return error.InvalidHelloField,
+        };
+    }
+    if (try bson.Reader.get(body, "msg")) |value| {
+        const msg = switch (value) {
+            .string => |v| v,
+            else => return error.InvalidHelloField,
+        };
+        result.is_mongos = std.mem.eql(u8, msg, "isdbgrid");
+    }
+
+    // Multi-document transactions require sessions and either a replica set
+    // or mongos. A standalone can expose logical sessions but cannot run a
+    // transaction.
+    result.supports_transactions =
+        result.logical_session_timeout_minutes != null and
+        (result.replica_set_name != null or result.is_mongos);
     return result;
 }
 
