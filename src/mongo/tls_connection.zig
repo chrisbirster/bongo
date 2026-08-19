@@ -59,6 +59,7 @@ pub const TlsConnection = struct {
     stream_writer: net.Stream.Writer,
     tls_client: std.crypto.tls.Client,
     ca_bundle: std.crypto.Certificate.Bundle,
+    ca_lock: Io.RwLock,
 
     socket_read_buffer: []u8,
     socket_write_buffer: []u8,
@@ -125,7 +126,7 @@ pub const TlsConnection = struct {
         errdefer allocator.destroy(self);
 
         // Initialize all address-stable fields before constructing the TLS
-        // client. Its reader/writer pointers target these exact fields.
+        // client. Its reader/writer and CA pointers target these exact fields.
         self.* = .{
             .allocator = allocator,
             .io = io,
@@ -134,6 +135,7 @@ pub const TlsConnection = struct {
             .stream_writer = stream.writer(io, socket_write_buffer),
             .tls_client = undefined,
             .ca_bundle = ca_bundle,
+            .ca_lock = .init,
             .socket_read_buffer = socket_read_buffer,
             .socket_write_buffer = socket_write_buffer,
             .tls_read_buffer = tls_read_buffer,
@@ -169,13 +171,18 @@ pub const TlsConnection = struct {
                 else
                     .no_verification,
                 .ca = if (options.verify_certificate)
-                    .{ .bundle = self.ca_bundle }
+                    .{ .bundle = .{
+                        .gpa = allocator,
+                        .io = io,
+                        .lock = &self.ca_lock,
+                        .bundle = &self.ca_bundle,
+                    } }
                 else
                     .no_verification,
                 .read_buffer = self.tls_read_buffer,
                 .write_buffer = self.tls_write_buffer,
                 .entropy = &entropy,
-                .realtime_now_seconds = now.toSeconds(),
+                .realtime_now = now,
                 .allow_truncation_attacks = false,
             },
         );
