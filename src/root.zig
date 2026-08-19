@@ -61,6 +61,7 @@ pub const mongo = struct {
     pub const op_msg = @import("mongo/op_msg.zig");
     pub const Connection = @import("mongo/connection.zig").Connection;
     pub const authenticate = @import("mongo/auth.zig").authenticate;
+    pub const authenticateSha1 = @import("mongo/auth.zig").authenticateSha1;
     pub const Client = @import("mongo/client.zig").Client;
     pub const Database = @import("mongo/client.zig").Database;
     pub const Collection = @import("mongo/client.zig").Collection;
@@ -123,6 +124,7 @@ test {
     _ = @import("mongo/op_msg.zig");
     _ = @import("mongo/connection.zig");
     _ = @import("mongo/scram.zig");
+    _ = @import("mongo/scram_sha1.zig");
     _ = @import("mongo/scram_final.zig");
     _ = @import("mongo/scram_server.zig");
     _ = @import("mongo/sasl.zig");
