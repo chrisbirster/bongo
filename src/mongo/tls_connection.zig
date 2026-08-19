@@ -6,6 +6,7 @@ const uri_options = @import("uri_options.zig");
 
 const default_max_message_size = 48 * 1024 * 1024;
 const tls_buffer_size = std.crypto.tls.Client.min_buffer_len;
+const tls_entropy_size = 240;
 
 pub const Error = error{
     TlsDisabled,
@@ -159,7 +160,7 @@ pub const TlsConnection = struct {
             .bytes = .empty,
         };
 
-        var entropy: [176]u8 = undefined;
+        var entropy: [tls_entropy_size]u8 = undefined;
         io.random(&entropy);
 
         self.tls_client = try std.crypto.tls.Client.init(
