@@ -120,8 +120,9 @@ pub fn isCompressed(message: []const u8) bool {
 }
 
 /// Select the first codec Bongo can actually encode/decode that is also
-/// advertised by the server. v0.3 ships zlib; URI parsing may recognize other
-/// compressor names for forward compatibility, but they are not selected here.
+/// advertised by the server. v0.3 ships the zlib wire codec; URI parsing may
+/// recognize other compressor names for forward compatibility, but they are
+/// not selected here.
 pub fn select(server_compression_array: []const u8) !?Compressor {
     const bson = @import("../bson.zig");
     var reader = try bson.Reader.init(server_compression_array);
@@ -143,25 +144,26 @@ fn validateMessage(message: []const u8) Error!void {
 }
 
 fn compressZlib(allocator: Allocator, input: []const u8) ![]u8 {
-    // Zig's flate compressor is exercised by the stdlib with a fixed backing
-    // writer. Keep a deliberately conservative amount of expansion room for
-    // incompressible input, then return only the bytes actually emitted.
-    const overhead = input.len / 8 + 1024;
-    const capacity = std.math.add(usize, input.len, overhead) catch
+    // Zig 0.16 exposes a dedicated stored-block DEFLATE writer. It produces a
+    // standards-valid zlib stream without relying on the optimizing compressor
+    // path that is currently unsuitable for Bongo's short message buffers.
+    // This prioritizes wire interoperability in v0.3; size-reducing DEFLATE can
+    // be layered in later without changing OP_COMPRESSED framing.
+    const block_count = input.len / 65_535 + 1;
+    const block_overhead = std.math.mul(usize, block_count, 5) catch
         return error.MessageTooLarge;
+    const capacity = std.math.add(usize, input.len, block_overhead + 6) catch
+        return error.MessageTooLarge;
+
     const output_storage = try allocator.alloc(u8, capacity);
     defer allocator.free(output_storage);
     var output: Io.Writer = .fixed(output_storage);
 
-    var history: [flate.max_window_len]u8 = undefined;
-    var compressor = try flate.Compress.init(
-        &output,
-        &history,
-        .zlib,
-        .default,
-    );
-    try compressor.writer.writeAll(input);
-    try compressor.writer.flush();
+    var buffer: [flate.max_window_len]u8 = undefined;
+    var encoder = try flate.Compress.Raw.init(&output, &buffer, .zlib);
+    try encoder.writer.writeAll(input);
+    try encoder.writer.flush();
+
     return allocator.dupe(u8, output.buffered());
 }
 
