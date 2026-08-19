@@ -470,7 +470,8 @@ test "SRV parent-domain validation" {
     try std.testing.expect(!validTarget("server.mongodb.com", "db1.evil.com"));
     try std.testing.expect(validTarget("mongodb.local", "db.mongodb.local"));
     try std.testing.expect(!validTarget("mongodb.local", "mongodb.local"));
-    try std.testing.expect(validTarget("a.b.example.com", "example.com"));
+    try std.testing.expect(validTarget("a.b.example.com", "db.b.example.com"));
+    try std.testing.expect(!validTarget("a.b.example.com", "example.com"));
 }
 
 test "SRV URI rejects multiple hosts and ports before DNS" {
