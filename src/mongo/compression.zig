@@ -143,19 +143,26 @@ fn validateMessage(message: []const u8) Error!void {
 }
 
 fn compressZlib(allocator: Allocator, input: []const u8) ![]u8 {
-    var output = try Io.Writer.Allocating.initCapacity(allocator, 64);
-    defer output.deinit();
+    // Zig's flate compressor is exercised by the stdlib with a fixed backing
+    // writer. Keep a deliberately conservative amount of expansion room for
+    // incompressible input, then return only the bytes actually emitted.
+    const overhead = input.len / 8 + 1024;
+    const capacity = std.math.add(usize, input.len, overhead) catch
+        return error.MessageTooLarge;
+    const output_storage = try allocator.alloc(u8, capacity);
+    defer allocator.free(output_storage);
+    var output: Io.Writer = .fixed(output_storage);
 
     var history: [flate.max_window_len]u8 = undefined;
     var compressor = try flate.Compress.init(
-        &output.writer,
+        &output,
         &history,
         .zlib,
         .default,
     );
     try compressor.writer.writeAll(input);
     try compressor.writer.flush();
-    return output.toOwnedSlice();
+    return allocator.dupe(u8, output.buffered());
 }
 
 fn decompressZlib(
@@ -164,11 +171,11 @@ fn decompressZlib(
     expected_size: usize,
 ) ![]u8 {
     var source: Io.Reader = .fixed(input);
-    // Zig's flate decoder supports direct streaming when the history buffer is
-    // empty. This is also the pattern used by the Zig 0.16 stdlib flate tests.
-    // Stream into a fixed writer so a payload can never expand beyond
-    // MongoDB's advertised uncompressedSize.
-    var decompressor = flate.Decompress.init(&source, .zlib, &.{});
+    // Keep the full DEFLATE history window so back-references in normal BSON
+    // payloads are supported. streamRemaining is the Zig 0.16 stdlib pattern
+    // for consuming a complete compressed stream.
+    var history: [flate.max_window_len]u8 = undefined;
+    var decompressor = flate.Decompress.init(&source, .zlib, &history);
 
     const output = try allocator.alloc(u8, expected_size);
     errdefer allocator.free(output);
