@@ -62,7 +62,7 @@ pub const Budget = struct {
 
         if (operation_deadline) |op| {
             if (socket_deadline) |socket| {
-                if (op.compare(.le, socket)) {
+                if (op.compare(.lte, socket)) {
                     return .{ .deadline = op, .source = .operation };
                 }
                 return .{ .deadline = socket, .source = .socket };
