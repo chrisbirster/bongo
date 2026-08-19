@@ -36,4 +36,5 @@ test {
     _ = @import("integration/35_list_indexes.zig");
     _ = @import("integration/36_list_databases.zig");
     _ = @import("integration/37_drop_database.zig");
+    _ = @import("integration/38_run_command.zig");
 }

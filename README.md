@@ -65,6 +65,7 @@ fn run(io: std.Io, allocator: std.mem.Allocator) !void {
 | Collections | create, list, rename, drop |
 | Indexes | create, list, drop |
 | Databases | list and drop |
+| Commands | generic `runCommand` with owned raw BSON responses |
 | Testing | unit tests plus integration tests against a real MongoDB server |
 
 ## Important limitations
@@ -87,6 +88,7 @@ Start here:
 - [Getting started](docs/getting-started.md) — connect, choose a collection, and understand ownership.
 - [CRUD](docs/crud.md) — inserts, reads, updates, replacements, deletes, upserts, and bulk writes.
 - [Querying](docs/querying.md) — filters, options, cursors, aggregation, explain, and concerns.
+- [Raw commands](docs/commands.md) — use `runCommand` safely when Bongo has no high-level wrapper yet.
 - [Administration](docs/admin.md) — collection, index, and database management.
 - [Architecture](docs/architecture.md) — how the public API reaches BSON, OP_MSG, and MongoDB.
 - [Testing and quality](docs/testing.md) — Bongo Style expectations, negative-space testing, assertions, errors, and merge gates.

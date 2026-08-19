@@ -6,9 +6,7 @@ The issue list is the detailed source of truth. This document is the human-sized
 
 ## Current position
 
-Bongo has reached **BONGO-0035**. The driver now has an application-facing API for authenticated single-server CRUD, cursors, common query options, aggregation, collection administration, index administration, and database discovery/deletion.
-
-The next issue is #36 — a generic `runCommand` escape hatch for commands that do not yet have a high-level Bongo wrapper.
+Bongo has reached **BONGO-0036**. The driver now has an application-facing API for authenticated single-server CRUD, cursors, common query options, aggregation, collection/index/database administration, and a generic `runCommand` escape hatch for commands that do not yet have a high-level Bongo wrapper.
 
 Before later roadmap tickets are implemented mechanically, their scope should be compared with the current code. Some tickets were drafted before earlier milestones grew a fuller public `Client`, `Database`, and `Collection` model, so already-satisfied work should be updated or closed rather than duplicated.
 
@@ -73,11 +71,16 @@ The current administration surface includes:
 
 Cursor-backed collection/index discovery reuses Bongo's `getMore` machinery, while database discovery owns its top-level response buffer explicitly.
 
-### 6. Command escape hatch and client configuration — planned
+### 6. Command escape hatch — implemented
 
-The next work begins with:
+`runCommand` provides an explicit low-level path for database commands that Bongo does not yet wrap. It preserves command-field order, adds the selected database as `$db`, validates the shared command response boundary, and returns owned raw BSON.
 
-- #36 — generic `runCommand`;
+The escape hatch deliberately does not guess command-specific concerns/options or turn arbitrary cursor responses into Bongo cursors.
+
+### 7. Client configuration and secure connectivity — planned
+
+The next roadmap group adds the pieces expected from a general-purpose MongoDB connection layer, including:
+
 - typed client configuration and connection options;
 - `mongodb://` URI parsing and validation;
 - `mongodb+srv://` discovery;
@@ -86,7 +89,7 @@ The next work begins with:
 
 Existing client-object-model tickets should be reconciled with the `Client`, `Database`, and `Collection` API that is already in use before new code is added.
 
-### 7. Pooling, topology, and server selection — planned
+### 8. Pooling, topology, and server selection — planned
 
 A production driver cannot remain a single socket. The roadmap therefore adds:
 
@@ -100,15 +103,15 @@ A production driver cannot remain a single socket. The roadmap therefore adds:
 
 Until this phase exists, Bongo should be described as a **single-server driver**, not as a replica-set-aware production driver.
 
-### 8. Sessions, transactions, and reliability — planned
+### 9. Sessions, transactions, and reliability — planned
 
 Later milestones add logical sessions, retryable behavior, transaction lifecycle, pinning, and related command metadata.
 
-### 9. BSON ergonomics and additional MongoDB features — planned
+### 10. BSON ergonomics and additional MongoDB features — planned
 
 The roadmap continues with typed BSON decoding, naming controls, ownership refinements, Extended JSON, change streams, GridFS, and other driver capabilities.
 
-### 10. Hardening and release — planned
+### 11. Hardening and release — planned
 
 The final initial-roadmap milestones include:
 
