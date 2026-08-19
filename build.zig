@@ -43,6 +43,23 @@ pub fn build(b: *std.Build) void {
     );
     tls_integration_test_step.dependOn(&run_tls_integration_tests.step);
 
+    const runtime_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/integration/42_runtime_transaction.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bongo", .module = mod },
+            },
+        }),
+    });
+    const run_runtime_integration_tests = b.addRunArtifact(runtime_integration_tests);
+    const runtime_integration_test_step = b.step(
+        "runtime-integration-test",
+        "Run runtime-client session and transaction integration tests",
+    );
+    runtime_integration_test_step.dependOn(&run_runtime_integration_tests.step);
+
     const exe = b.addExecutable(.{
         .name = "bongo",
         .root_module = b.createModule(.{
