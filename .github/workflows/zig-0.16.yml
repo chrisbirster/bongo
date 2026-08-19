@@ -14,10 +14,4 @@ jobs:
           version: 0.16.0
       - run: zig build test
       - name: Compile Deez readiness surface
-        run: |
-          zig test src/mongo/query.zig
-          zig test src/mongo/session.zig
-          zig test src/mongo/pool.zig
-          zig test src/mongo/topology.zig
-          zig test src/mongo/transaction.zig
-          zig test src/mongo/runtime_client.zig
+        run: zig test src/deez_readiness.zig
