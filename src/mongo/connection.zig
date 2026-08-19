@@ -1,5 +1,6 @@
 const std = @import("std");
 const compression = @import("compression.zig");
+const operation_timeout = @import("operation_timeout.zig");
 
 const Io = std.Io;
 const net = Io.net;
@@ -10,24 +11,24 @@ pub const Connection = struct {
     stream: net.Stream,
     compressor: ?compression.Compressor = null,
     socket_timeout_ms: ?u32 = null,
+    operation_timeout_ms: ?u64 = null,
 
     pub const Error = error{
         InvalidMessageLength,
         MessageTooLarge,
         ConnectTimeout,
         SocketTimeout,
+        OperationTimeout,
     };
 
     pub const Options = struct {
-        /// Time allowed for DNS/TCP connection establishment. `0` means no
-        /// timeout, matching MongoDB URI semantics.
         connect_timeout_ms: ?u32 = null,
-        /// Per socket send/receive limit. `0` means no timeout.
         socket_timeout_ms: ?u32 = null,
+        /// One budget for a complete request. `0` means no client-side
+        /// operation timeout, matching MongoDB `timeoutMS` semantics.
+        operation_timeout_ms: ?u64 = null,
     };
 
-    /// Until `hello` tells us MongoDB's actual maxMessageSizeBytes,
-    /// keep a defensive local limit.
     pub const default_max_message_size: usize = 48 * 1024 * 1024;
 
     pub fn connect(io: Io, host: []const u8, port: u16) !Connection {
@@ -53,6 +54,7 @@ pub const Connection = struct {
             .io = io,
             .stream = stream,
             .socket_timeout_ms = options.socket_timeout_ms,
+            .operation_timeout_ms = options.operation_timeout_ms,
         };
     }
 
@@ -65,63 +67,76 @@ pub const Connection = struct {
         self.compressor = compressor;
     }
 
+    /// Execute one command request with this connection's configured timeoutMS.
+    /// The deadline starts before compression and is shared by send + receive.
     pub fn request(
         self: *Connection,
         allocator: Allocator,
         request_bytes: []const u8,
     ) ![]u8 {
+        return self.requestWithTimeoutMs(
+            allocator,
+            request_bytes,
+            self.operation_timeout_ms,
+        );
+    }
+
+    /// Execute one request with an explicit client-side timeout override.
+    /// `null` and `0` disable the operation budget while preserving any
+    /// configured per-socket timeout.
+    pub fn requestWithTimeoutMs(
+        self: *Connection,
+        allocator: Allocator,
+        request_bytes: []const u8,
+        timeout_ms: ?u64,
+    ) ![]u8 {
+        const budget = try operation_timeout.Budget.start(self.io, timeout_ms);
+
         if (self.compressor) |compressor| {
-            const compressed = try compression.compressMessage(allocator, request_bytes, compressor);
+            const compressed = try compression.compressMessage(
+                allocator,
+                request_bytes,
+                compressor,
+            );
             defer allocator.free(compressed);
-            try self.send(compressed);
+            try self.sendWithin(compressed, budget);
         } else {
-            try self.send(request_bytes);
+            try self.sendWithin(request_bytes, budget);
         }
-        return self.receive(allocator, default_max_message_size);
+        return self.receiveWithin(
+            allocator,
+            default_max_message_size,
+            budget,
+        );
     }
 
+    /// Direct send using only socketTimeoutMS. Normal command code should use
+    /// `request`, which carries a shared operation budget across both steps.
     pub fn send(self: *Connection, bytes: []const u8) !void {
-        const timeout_ms = activeTimeout(self.socket_timeout_ms) orelse
-            return self.sendRaw(bytes);
-
-        var operation = self.io.async(sendRaw, .{ self, bytes });
-        var timer = self.io.async(Io.sleep, .{
-            self.io,
-            Io.Duration.fromMilliseconds(timeout_ms),
-            Io.Clock.awake,
-        });
-
-        switch (try Io.select(self.io, .{
-            .operation = &operation,
-            .timer = &timer,
-        })) {
-            .operation => |result| {
-                _ = timer.cancel(self.io) catch {};
-                return result;
-            },
-            .timer => |result| {
-                try result;
-                _ = operation.cancel(self.io) catch {};
-                return error.SocketTimeout;
-            },
-        }
+        return self.sendWithin(bytes, .{});
     }
 
+    /// Direct receive using only socketTimeoutMS.
     pub fn receive(
         self: *Connection,
         allocator: Allocator,
         max_message_size: usize,
     ) ![]u8 {
-        const timeout_ms = activeTimeout(self.socket_timeout_ms) orelse
-            return self.receiveRaw(allocator, max_message_size);
+        return self.receiveWithin(allocator, max_message_size, .{});
+    }
 
-        var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
-        var timer = self.io.async(Io.sleep, .{
-            self.io,
-            Io.Duration.fromMilliseconds(timeout_ms),
-            Io.Clock.awake,
-        });
+    fn sendWithin(
+        self: *Connection,
+        bytes: []const u8,
+        budget: operation_timeout.Budget,
+    ) !void {
+        const limit = budget.limit(self.io, self.socket_timeout_ms) catch |err| switch (err) {
+            error.OperationTimeout => return error.OperationTimeout,
+            else => |e| return e,
+        } orelse return self.sendRaw(bytes);
 
+        var operation = self.io.async(sendRaw, .{ self, bytes });
+        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
         switch (try Io.select(self.io, .{
             .operation = &operation,
             .timer = &timer,
@@ -133,7 +148,39 @@ pub const Connection = struct {
             .timer => |result| {
                 try result;
                 _ = operation.cancel(self.io) catch {};
-                return error.SocketTimeout;
+                return switch (limit.source) {
+                    .operation => error.OperationTimeout,
+                    .socket => error.SocketTimeout,
+                };
+            },
+        }
+    }
+
+    fn receiveWithin(
+        self: *Connection,
+        allocator: Allocator,
+        max_message_size: usize,
+        budget: operation_timeout.Budget,
+    ) ![]u8 {
+        const limit = budget.limit(self.io, self.socket_timeout_ms) catch |err| switch (err) {
+            error.OperationTimeout => return error.OperationTimeout,
+            else => |e| return e,
+        } orelse return self.receiveRaw(allocator, max_message_size);
+
+        var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
+        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
+        switch (try Io.select(self.io, .{
+            .operation => |result| {
+                _ = timer.cancel(self.io) catch {};
+                return result;
+            },
+            .timer => |result| {
+                try result;
+                _ = operation.cancel(self.io) catch {};
+                return switch (limit.source) {
+                    .operation => error.OperationTimeout,
+                    .socket => error.SocketTimeout,
+                };
             },
         }
     }
@@ -173,6 +220,10 @@ pub const Connection = struct {
         );
         allocator.free(message);
         return decompressed;
+    }
+
+    fn waitUntil(io: Io, deadline: Io.Clock.Timestamp) !void {
+        try deadline.wait(io);
     }
 
     fn timeoutFromMs(value: ?u32) Io.Timeout {
