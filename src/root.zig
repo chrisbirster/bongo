@@ -26,6 +26,7 @@ pub const listIndexes = @import("mongo/list_indexes.zig").listIndexes;
 pub const ListDatabasesResult = @import("mongo/list_databases.zig").Result;
 pub const listDatabases = @import("mongo/list_databases.zig").listDatabases;
 pub const dropDatabase = @import("mongo/database_admin.zig").dropDatabase;
+pub const runCommand = @import("mongo/run_command.zig").runCommand;
 pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
 pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
 pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -77,6 +78,7 @@ pub const mongo = struct {
     pub const ListDatabasesResult = @import("mongo/list_databases.zig").Result;
     pub const listDatabases = @import("mongo/list_databases.zig").listDatabases;
     pub const dropDatabase = @import("mongo/database_admin.zig").dropDatabase;
+    pub const runCommand = @import("mongo/run_command.zig").runCommand;
     pub const ReturnDocument = @import("mongo/client.zig").ReturnDocument;
     pub const FindOneAndUpdateOptions = @import("mongo/client.zig").FindOneAndUpdateOptions;
     pub const FindOneAndReplaceOptions = @import("mongo/client.zig").FindOneAndReplaceOptions;
@@ -132,4 +134,5 @@ test {
     _ = @import("mongo/list_indexes.zig");
     _ = @import("mongo/list_databases.zig");
     _ = @import("mongo/database_admin.zig");
+    _ = @import("mongo/run_command.zig");
 }
