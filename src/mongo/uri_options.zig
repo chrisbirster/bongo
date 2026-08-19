@@ -125,17 +125,13 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
     var raw = try uri.parse(allocator, connection_string);
     defer raw.deinit();
 
-    var result = Options{
-        .allocator = allocator,
-        .hosts = try allocator.alloc(Host, raw.hosts.len),
-        .compressors = try allocator.alloc(Compressor, 0),
-    };
-    errdefer result.deinit();
-
+    const hosts = try allocator.alloc(Host, raw.hosts.len);
     var initialized_hosts: usize = 0;
-    errdefer {
-        for (result.hosts[0..initialized_hosts]) |host| allocator.free(host.name);
-    }
+    var hosts_handed_off = false;
+    errdefer if (!hosts_handed_off) {
+        for (hosts[0..initialized_hosts]) |host| allocator.free(host.name);
+        allocator.free(hosts);
+    };
 
     for (raw.hosts, 0..) |raw_host, index| {
         const decoded = try decodeComponent(allocator, raw_host.name);
@@ -150,15 +146,25 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
 
         for (decoded) |*byte| byte.* = std.ascii.toLower(byte.*);
 
-        result.hosts[index] = .{
+        hosts[index] = .{
             .name = decoded,
             .port = raw_host.port orelse 27017,
         };
         initialized_hosts += 1;
     }
 
-    // Host names are now owned by result; avoid the partial-host cleanup path.
-    initialized_hosts = 0;
+    const compressors = try allocator.alloc(Compressor, 0);
+    var compressors_handed_off = false;
+    errdefer if (!compressors_handed_off) allocator.free(compressors);
+
+    var result = Options{
+        .allocator = allocator,
+        .hosts = hosts,
+        .compressors = compressors,
+    };
+    hosts_handed_off = true;
+    compressors_handed_off = true;
+    errdefer result.deinit();
 
     if (raw.username) |raw_username| {
         try validateRawUserInfo(raw_username);
@@ -202,12 +208,12 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             result.replica_set = decoded;
         } else if (optionName(name, "directConnection")) {
             try markSeen(&seen.direct_connection);
-            result.direct_connection = try parseBoolean(raw_option.value);
+            result.direct_connection = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "loadBalanced")) {
             try markSeen(&seen.load_balanced);
-            result.load_balanced = try parseBoolean(raw_option.value);
+            result.load_balanced = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tls") or optionName(name, "ssl")) {
-            const value = try parseBoolean(raw_option.value);
+            const value = try parseBooleanOption(allocator, raw_option.value);
             if (result.tls) |existing| {
                 if (existing != value) return error.ConflictingTlsOptions;
             } else {
@@ -215,19 +221,19 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             }
         } else if (optionName(name, "tlsInsecure")) {
             try markSeen(&seen.tls_insecure);
-            result.tls_insecure = try parseBoolean(raw_option.value);
+            result.tls_insecure = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tlsAllowInvalidCertificates")) {
             try markSeen(&seen.tls_allow_invalid_certificates);
-            result.tls_allow_invalid_certificates = try parseBoolean(raw_option.value);
+            result.tls_allow_invalid_certificates = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tlsAllowInvalidHostnames")) {
             try markSeen(&seen.tls_allow_invalid_hostnames);
-            result.tls_allow_invalid_hostnames = try parseBoolean(raw_option.value);
+            result.tls_allow_invalid_hostnames = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tlsDisableOCSPEndpointCheck")) {
             try markSeen(&seen.tls_disable_ocsp_endpoint_check);
-            result.tls_disable_ocsp_endpoint_check = try parseBoolean(raw_option.value);
+            result.tls_disable_ocsp_endpoint_check = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tlsDisableCertificateRevocationCheck")) {
             try markSeen(&seen.tls_disable_certificate_revocation_check);
-            result.tls_disable_certificate_revocation_check = try parseBoolean(raw_option.value);
+            result.tls_disable_certificate_revocation_check = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "tlsCAFile")) {
             try markSeen(&seen.tls_ca_file);
             result.tls_ca_file = try decodeComponent(allocator, raw_option.value);
@@ -239,13 +245,13 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             result.tls_certificate_key_file_password = try decodeComponent(allocator, raw_option.value);
         } else if (optionName(name, "connectTimeoutMS")) {
             try markSeen(&seen.connect_timeout_ms);
-            result.connect_timeout_ms = try parseU32(raw_option.value);
+            result.connect_timeout_ms = try parseU32Option(allocator, raw_option.value);
         } else if (optionName(name, "socketTimeoutMS")) {
             try markSeen(&seen.socket_timeout_ms);
-            result.socket_timeout_ms = try parseU32(raw_option.value);
+            result.socket_timeout_ms = try parseU32Option(allocator, raw_option.value);
         } else if (optionName(name, "timeoutMS")) {
             try markSeen(&seen.timeout_ms);
-            result.timeout_ms = try parseU64(raw_option.value);
+            result.timeout_ms = try parseU64Option(allocator, raw_option.value);
         } else if (optionName(name, "compressors")) {
             try markSeen(&seen.compressors);
             const decoded = try decodeComponent(allocator, raw_option.value);
@@ -257,7 +263,7 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             result.srv_service_name = try decodeComponent(allocator, raw_option.value);
         } else if (optionName(name, "srvMaxHosts")) {
             try markSeen(&seen.srv_max_hosts);
-            result.srv_max_hosts = try parseU32(raw_option.value);
+            result.srv_max_hosts = try parseU32Option(allocator, raw_option.value);
         }
         // Unknown options are intentionally ignored. Bongo does not yet have
         // a logging subsystem to emit the specification's recommended warning.
@@ -369,7 +375,9 @@ fn parseCompressors(allocator: Allocator, value: []const u8) (Allocator.Error ||
     if (value.len == 0) return allocator.alloc(Compressor, 0);
 
     var count: usize = 1;
-    for (value) |byte| if (byte == ',') { count += 1; };
+    for (value) |byte| {
+        if (byte == ',') count += 1;
+    }
 
     const compressors = try allocator.alloc(Compressor, count);
     errdefer allocator.free(compressors);
@@ -389,6 +397,24 @@ fn parseCompressors(allocator: Allocator, value: []const u8) (Allocator.Error ||
     }
 
     return compressors;
+}
+
+fn parseBooleanOption(allocator: Allocator, raw: []const u8) (Allocator.Error || Error)!bool {
+    const decoded = try decodeComponent(allocator, raw);
+    defer allocator.free(decoded);
+    return parseBoolean(decoded);
+}
+
+fn parseU32Option(allocator: Allocator, raw: []const u8) (Allocator.Error || Error)!u32 {
+    const decoded = try decodeComponent(allocator, raw);
+    defer allocator.free(decoded);
+    return parseU32(decoded);
+}
+
+fn parseU64Option(allocator: Allocator, raw: []const u8) (Allocator.Error || Error)!u64 {
+    const decoded = try decodeComponent(allocator, raw);
+    defer allocator.free(decoded);
+    return parseU64(decoded);
 }
 
 fn parseBoolean(raw: []const u8) Error!bool {
@@ -482,6 +508,17 @@ test "percent decodes credentials database and option values" {
     try std.testing.expectEqualStrings("my-db", options.auth_source.?);
 }
 
+test "typed option values are percent decoded before parsing" {
+    var options = try parse(
+        std.testing.allocator,
+        "mongodb://alice:secret@localhost?tls=%74rue&connectTimeoutMS=%35%30%30%30",
+    );
+    defer options.deinit();
+
+    try std.testing.expectEqual(true, options.tls.?);
+    try std.testing.expectEqual(@as(u32, 5000), options.connect_timeout_ms.?);
+}
+
 test "parses booleans integers compressors and auth mechanism" {
     var options = try parse(
         std.testing.allocator,
@@ -568,6 +605,13 @@ test "invalid percent encoding and database characters fail" {
     try std.testing.expectError(
         error.InvalidDatabase,
         parse(std.testing.allocator, "mongodb://alice:secret@localhost/bad%20db"),
+    );
+}
+
+test "conflicting insecure TLS options fail during normalization" {
+    try std.testing.expectError(
+        error.ConflictingTlsOptions,
+        parse(std.testing.allocator, "mongodb://localhost?tlsInsecure=false&tlsAllowInvalidCertificates=false"),
     );
 }
 
