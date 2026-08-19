@@ -4,7 +4,7 @@ Bongo follows semantic versioning while the project is pre-1.0. Minor releases (
 
 ## 0.3.0 — 2026-08-19
 
-Bongo's third application-facing release hardens connection setup for real deployments with URI configuration, TLS, broader authentication compatibility, DNS discovery, wire compression, and bounded network and operation timing.
+Bongo's third application-facing release hardens connection setup for real deployments with URI configuration, TLS, broader authentication compatibility, DNS discovery, and bounded network and operation timing.
 
 ### Added
 
@@ -15,10 +15,9 @@ Bongo's third application-facing release hardens connection setup for real deplo
 - Authentication handshake negotiation that prefers SCRAM-SHA-256, falls back to SCRAM-SHA-1, and resumes speculative SCRAM-SHA-256 authentication when the server accepts it.
 - TLS connections backed by Zig's standard TLS client, including system trust roots, custom CA files, hostname verification, and explicit insecure verification controls.
 - MONGODB-X509 authentication command and connection-configuration validation.
-- MongoDB `OP_COMPRESSED` framing with negotiated zlib compression for post-authentication application commands.
 - Configurable DNS/TCP connection-establishment and per-socket I/O timeouts.
-- Client-side `timeoutMS` operation budgets that carry one monotonic deadline across compression, send, and receive.
-- Connection-layer documentation for URI parsing, SRV discovery, TLS, authentication, compression, and timeout behavior.
+- Client-side `timeoutMS` operation budgets that carry one monotonic deadline across send and receive.
+- Connection-layer documentation for URI parsing, SRV discovery, TLS, authentication, and timeout behavior.
 
 ### Current limitations
 
@@ -27,7 +26,7 @@ Bongo's third application-facing release hardens connection setup for real deplo
 - Read preference is modeled but is not yet used for multi-server routing.
 - No sessions, retryable operations, or transactions yet.
 - Zig 0.16's built-in TLS client does not expose client-certificate/private-key presentation, so Bongo's built-in TLS transport cannot yet complete mutual TLS for end-to-end MONGODB-X509 authentication. The MongoDB X.509 command/configuration layer is implemented.
-- zlib is the only wire-compression codec currently implemented. The URI layer recognizes snappy and zstd names for forward compatibility, but Bongo does not advertise or select them yet.
+- Wire compression is not enabled in v0.3. The URI layer recognizes compressor preferences for forward compatibility; MongoDB `OP_COMPRESSED` support remains deferred.
 
 ## 0.2.0 — 2026-08-18
 
