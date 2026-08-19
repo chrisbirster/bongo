@@ -6,24 +6,10 @@ Bongo exposes the MongoDB management commands implemented so far as top-level dr
 
 ```zig
 const database = client.database("app");
-
 try bongo.createCollection(database, "events", .{});
 ```
 
-Collection options are flattened into MongoDB's `create` command, so supported BSON options can be supplied without Bongo hard-coding every server option:
-
-```zig
-try bongo.createCollection(
-    database,
-    "events",
-    .{
-        .capped = true,
-        .size = @as(i64, 1_048_576),
-    },
-);
-```
-
-Creating an already existing collection is surfaced as a MongoDB command failure.
+Collection options are flattened into MongoDB's `create` command, so supported BSON options can be supplied without Bongo hard-coding every server option.
 
 ## List collections
 
@@ -45,25 +31,15 @@ while (try cursor.next()) |document| {
 }
 ```
 
-Bongo preserves the raw collection metadata rather than reducing the response to names only.
-
-## Rename a collection
+## Rename and drop collections
 
 ```zig
 const events = database.collection("events");
 try bongo.renameCollection(events, "archived_events", false);
+try bongo.dropCollection(database.collection("archived_events"));
 ```
 
-The third argument controls MongoDB's `dropTarget` option. MongoDB's `renameCollection` command runs against the `admin` database and uses fully qualified source/target namespaces internally; Bongo constructs those namespaces for the caller.
-
-## Drop a collection
-
-```zig
-const events = database.collection("events");
-try bongo.dropCollection(events);
-```
-
-Dropping a collection is idempotent with current MongoDB behavior: dropping a collection that does not exist is treated as success. Callers should not rely on a second drop producing an error.
+The rename boolean controls MongoDB's `dropTarget` option. `renameCollection` runs against `admin` internally using fully qualified namespaces. Dropping a collection is idempotent with current MongoDB behavior.
 
 ## Create an index
 
@@ -81,38 +57,45 @@ const result = try bongo.createIndex(
 );
 ```
 
-The key document may contain one or multiple fields. The caller supplies the index name. Index options are flattened into the index specification, allowing options such as `unique`, `sparse`, TTL, partial filters, collation, and hidden where accepted by the server.
-
-`CreateIndexResult` exposes MongoDB's optional index-count metadata:
-
-- `num_indexes_before`
-- `num_indexes_after`
-- `created_collection_automatically`
+The key document may contain one or multiple fields. Index options are flattened into the index specification. `CreateIndexResult` exposes MongoDB's optional before/after index counts and automatic-collection-creation flag.
 
 ## Drop indexes
 
-Bongo wraps MongoDB's `dropIndexes` command with `dropIndex()`:
-
 ```zig
 try bongo.dropIndex(users, "first_last_unique");
-```
-
-The selector is encoded as BSON, so callers can use an index name or key specification. MongoDB's special `"*"` selector removes all droppable non-`_id` indexes:
-
-```zig
 try bongo.dropIndex(users, "*");
 ```
 
-Configured client write concern is included automatically. Server failures such as a missing named index are returned as command errors rather than treated as success.
+`dropIndex()` wraps MongoDB's `dropIndexes` command. The selector is BSON-encoded, so a name or key specification can be supplied. The special `"*"` selector asks MongoDB to remove all droppable non-`_id` indexes. Configured client write concern is included automatically, and server failures are returned as errors.
 
 MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/dropIndexes/>
 
+## List indexes
+
+`listIndexes()` returns a cursor of raw index-information BSON documents:
+
+```zig
+var indexes = try bongo.listIndexes(
+    users,
+    .{ .cursor = .{ .batchSize = @as(i32, 10) } },
+);
+defer indexes.deinit();
+
+while (try indexes.next()) |document| {
+    const name = (try bongo.bson.Reader.get(document, "name")).?.string;
+    const key = (try bongo.bson.Reader.get(document, "key")).?.document;
+    _ = key;
+    std.debug.print("{s}\n", .{name});
+}
+```
+
+The raw documents preserve MongoDB's key specification and index options. The command cursor automatically uses `getMore` when a batch is exhausted.
+
+MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/listIndexes/>
+
 ## What is not implemented yet
 
-The management surface is intentionally incomplete at the current milestone:
+The remaining database-administration milestones in this group are:
 
-- #33 — `listIndexes`
 - #34 — `listDatabases`
 - #35 — `dropDatabase`
-
-Those should be completed before this document describes the current collection/index/database administration milestone as complete.
