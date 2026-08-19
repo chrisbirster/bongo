@@ -175,24 +175,30 @@ fn decompressZlib(
     expected_size: usize,
 ) ![]u8 {
     var source: Io.Reader = .fixed(input);
-    // Keep the full DEFLATE history window so back-references in normal BSON
-    // payloads are supported. streamRemaining is the Zig 0.16 stdlib pattern
-    // for consuming a complete compressed stream.
+    // With a history window Zig's flate decoder exposes output through its own
+    // buffered reader. Consume it the same way Zig 0.16's compressor tests do:
+    // peek available decompressed bytes, copy them, then toss them. This also
+    // lets us enforce MongoDB's advertised uncompressedSize before every copy.
     var history: [flate.max_window_len]u8 = undefined;
     var decompressor = flate.Decompress.init(&source, .zlib, &history);
 
     const output = try allocator.alloc(u8, expected_size);
     errdefer allocator.free(output);
-    var writer: Io.Writer = .fixed(output);
+    var written: usize = 0;
 
-    const decompressed_len = decompressor.reader.streamRemaining(&writer) catch |err| switch (err) {
-        error.WriteFailed => return error.UncompressedSizeMismatch,
+    while (decompressor.reader.peekGreedy(1)) |bytes| {
+        if (written > expected_size or bytes.len > expected_size - written) {
+            return error.UncompressedSizeMismatch;
+        }
+        @memcpy(output[written..][0..bytes.len], bytes);
+        written += bytes.len;
+        decompressor.reader.toss(bytes.len);
+    } else |err| switch (err) {
         error.ReadFailed => return error.InvalidCompressedPayload,
-    };
-
-    if (decompressed_len != expected_size or writer.end != expected_size) {
-        return error.UncompressedSizeMismatch;
+        error.EndOfStream => {},
     }
+
+    if (written != expected_size) return error.UncompressedSizeMismatch;
     return output;
 }
 
