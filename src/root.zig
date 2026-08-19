@@ -62,6 +62,8 @@ pub const mongo = struct {
     pub const Connection = @import("mongo/connection.zig").Connection;
     pub const authenticate = @import("mongo/auth.zig").authenticate;
     pub const authenticateSha1 = @import("mongo/auth.zig").authenticateSha1;
+    pub const authenticateWithHandshake = @import("mongo/auth_handshake.zig").authenticate;
+    pub const AuthHandshake = @import("mongo/auth_handshake.zig").Handshake;
     pub const Client = @import("mongo/client.zig").Client;
     pub const Database = @import("mongo/client.zig").Database;
     pub const Collection = @import("mongo/client.zig").Collection;
@@ -129,6 +131,7 @@ test {
     _ = @import("mongo/scram_server.zig");
     _ = @import("mongo/sasl.zig");
     _ = @import("mongo/auth.zig");
+    _ = @import("mongo/auth_handshake.zig");
     _ = @import("mongo/client.zig");
     _ = @import("mongo/uri.zig");
     _ = @import("mongo/uri_options.zig");
