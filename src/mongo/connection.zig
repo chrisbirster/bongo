@@ -120,7 +120,7 @@ pub const Connection = struct {
 
         var operation = self.io.async(sendRaw, .{ self, bytes });
         var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try Io.select(self.io, .{
+        switch (try self.io.select(.{
             .operation = &operation,
             .timer = &timer,
         })) {
@@ -152,7 +152,7 @@ pub const Connection = struct {
 
         var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
         var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try Io.select(self.io, .{
+        switch (try self.io.select(.{
             .operation = &operation,
             .timer = &timer,
         })) {
