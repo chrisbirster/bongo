@@ -2,66 +2,27 @@
 
 const std = @import("std");
 const types = @import("bson/types.zig");
+pub const Reader = @import("bson/Reader.zig");
+pub const Writer = @import("bson/Writer.zig");
 
-pub const ObjectId =
-    types.ObjectId;
-
-pub const Reader =
-    @import("bson/Reader.zig");
-
-pub const Writer =
-    @import("bson/Writer.zig");
-
-pub const Type =
-    types.Type;
-
-pub const BinarySubtype =
-    types.BinarySubtype;
-
-pub const DateTime =
-    types.DateTime;
-
-pub const Decimal128 =
-    types.Decimal128;
-
-pub const Undefined =
-    types.Undefined;
-
-pub const Null =
-    types.Null;
-
-pub const MinKey =
-    types.MinKey;
-
-pub const MaxKey =
-    types.MaxKey;
-
-pub const JavaScript =
-    types.JavaScript;
-
-pub const Symbol =
-    types.Symbol;
-
-pub const Timestamp =
-    types.Timestamp;
-
-pub const Binary =
-    types.Binary;
-
-pub const Regex =
-    types.Regex;
-
-pub const DbPointer =
-    types.DbPointer;
-
-pub const JavaScriptWithScope =
-    types.JavaScriptWithScope;
-
-pub const Value =
-    types.Value;
-
-pub const Element =
-    types.Element;
+pub const ObjectId = types.ObjectId;
+pub const Type = types.Type;
+pub const BinarySubtype = types.BinarySubtype;
+pub const DateTime = types.DateTime;
+pub const Decimal128 = types.Decimal128;
+pub const Undefined = types.Undefined;
+pub const Null = types.Null;
+pub const MinKey = types.MinKey;
+pub const MaxKey = types.MaxKey;
+pub const JavaScript = types.JavaScript;
+pub const Symbol = types.Symbol;
+pub const Timestamp = types.Timestamp;
+pub const Binary = types.Binary;
+pub const Regex = types.Regex;
+pub const DbPointer = types.DbPointer;
+pub const JavaScriptWithScope = types.JavaScriptWithScope;
+pub const Value = types.Value;
+pub const Element = types.Element;
 
 /// Errors produced while decoding BSON.
 pub const DecodeError =
@@ -76,11 +37,8 @@ pub const EncodeError =
         UnsupportedType,
     };
 
-pub const validateDocument =
-    Reader.validateDocument;
-
-pub const validateArray =
-    Reader.validateArray;
+pub const validateDocument = Reader.validateDocument;
+pub const validateArray = Reader.validateArray;
 
 /// Decode a complete BSON document into a streaming Reader.
 ///
@@ -88,9 +46,7 @@ pub const validateArray =
 pub fn decode(
     document_bytes: []const u8,
 ) DecodeError!Reader {
-    return Reader.init(
-        document_bytes,
-    );
+    return Reader.init(document_bytes);
 }
 
 /// Encode a Zig struct or anonymous struct into BSON.
@@ -98,8 +54,7 @@ pub fn encode(
     allocator: std.mem.Allocator,
     document: anytype,
 ) EncodeError![]u8 {
-    const T =
-        @TypeOf(document);
+    const T = @TypeOf(document);
 
     if (@typeInfo(T) != .@"struct") {
         @compileError(
@@ -107,8 +62,7 @@ pub fn encode(
         );
     }
 
-    var writer =
-        try Writer.init(allocator);
+    var writer = try Writer.init(allocator);
 
     errdefer writer.deinit();
 
@@ -124,8 +78,7 @@ fn encodeStructFields(
     writer: *Writer,
     value: anytype,
 ) EncodeError!void {
-    const T =
-        @TypeOf(value);
+    const T = @TypeOf(value);
 
     inline for (@typeInfo(T).@"struct".fields) |field| {
         try encodeField(
@@ -776,18 +729,16 @@ test "all BSON value types round trip" {
 
     defer allocator.free(nested);
 
-    const oid =
-        try ObjectId.fromHex(
-            "507f1f77bcf86cd799439011",
-        );
+    const oid = try ObjectId.fromHex(
+        "507f1f77bcf86cd799439011",
+    );
 
     const decimal =
         Decimal128{
             .bytes = [_]u8{0xAA} ** 16,
         };
 
-    var writer =
-        try Writer.init(allocator);
+    var writer = try Writer.init(allocator);
 
     defer writer.deinit();
 

@@ -237,14 +237,12 @@ pub fn validateRegexOptions(options: []const u8) Error!void {
     }
 }
 
-
 fn readI32At(bytes: []const u8, offset: usize) Error!i32 {
     if (offset + 4 > bytes.len) return error.UnexpectedEnd;
     var buf: [4]u8 = undefined;
     @memcpy(&buf, bytes[offset .. offset + 4]);
     return std.mem.readInt(i32, &buf, .little);
 }
-
 
 test "document validation rejects short wrong length and missing terminator" {
     try std.testing.expectError(error.InvalidDocumentLength, validateDocument(&.{ 4, 0, 0, 0 }));
@@ -290,10 +288,9 @@ test "reader rejects cstring with no terminator before document end" {
 
 test "reader rejects negative binary length" {
     const bytes = [_]u8{
-        13, 0, 0, 0,
-        0x05, 'b', 0,
-        0xFF, 0xFF, 0xFF, 0xFF,
-        0x00,
+        13,   0,    0,    0,
+        0x05, 'b',  0,    0xFF,
+        0xFF, 0xFF, 0xFF, 0x00,
         0x00,
     };
 
@@ -304,12 +301,12 @@ test "reader rejects malformed code-with-scope total length" {
     // Valid value would declare 15 bytes. Declaring 16 makes the internal
     // code-with-scope length extend past the containing BSON document.
     const bytes = [_]u8{
-        23, 0, 0, 0,
-        0x0F, 'c', 0,
-        16, 0, 0, 0,
-        2, 0, 0, 0, 'x', 0,
-        5, 0, 0, 0, 0,
-        0,
+        23,   0,   0, 0,
+        0x0F, 'c', 0, 16,
+        0,    0,   0, 2,
+        0,    0,   0, 'x',
+        0,    5,   0, 0,
+        0,    0,   0,
     };
 
     try std.testing.expectError(error.InvalidCodeWithScopeLength, validateDocument(&bytes));
@@ -317,10 +314,9 @@ test "reader rejects malformed code-with-scope total length" {
 
 test "reader rejects regex options that are not canonical" {
     const bytes = [_]u8{
-        13, 0, 0, 0,
-        0x0B, 'r', 0,
-        'x', 0,
-        'm', 'i', 0,
+        13,   0,   0,   0,
+        0x0B, 'r', 0,   'x',
+        0,    'm', 'i', 0,
         0,
     };
 
@@ -329,10 +325,12 @@ test "reader rejects regex options that are not canonical" {
 
 test "validateArray requires canonical sequential numeric keys" {
     const bytes = [_]u8{
-        23, 0, 0, 0,
-        0x02, '0', 0, 2, 0, 0, 0, 'a', 0,
-        0x02, '2', 0, 2, 0, 0, 0, 'b', 0,
-        0,
+        23,   0,    0,   0,
+        0x02, '0',  0,   2,
+        0,    0,    0,   'a',
+        0,    0x02, '2', 0,
+        2,    0,    0,   0,
+        'b',  0,    0,
     };
 
     try std.testing.expectError(error.InvalidArrayIndex, validateArray(&bytes));
@@ -340,10 +338,11 @@ test "validateArray requires canonical sequential numeric keys" {
 
 test "Reader.get returns a value and null when field is absent" {
     const bytes = [_]u8{
-        20, 0, 0, 0,
-        0x02, 'n', 'a', 'm', 'e', 0,
-        5, 0, 0, 0, 'J', 'o', 'h', 'n', 0,
-        0,
+        20,   0,   0,   0,
+        0x02, 'n', 'a', 'm',
+        'e',  0,   5,   0,
+        0,    0,   'J', 'o',
+        'h',  'n', 0,   0,
     };
 
     const name = (try Reader.get(&bytes, "name")).?;

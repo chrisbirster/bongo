@@ -216,7 +216,6 @@ pub fn checkedI32Len(len: usize) Error!i32 {
     return @intCast(len);
 }
 
-
 test "empty BSON document is exactly five bytes" {
     var writer = try Writer.init(std.testing.allocator);
     defer writer.deinit();
@@ -238,11 +237,10 @@ test "known BSON example name John encodes to 20 bytes" {
 
     const expected = [_]u8{
         0x14, 0x00, 0x00, 0x00,
-        0x02,
-        'n', 'a', 'm', 'e', 0x00,
-        0x05, 0x00, 0x00, 0x00,
-        'J', 'o', 'h', 'n', 0x00,
-        0x00,
+        0x02, 'n',  'a',  'm',
+        'e',  0x00, 0x05, 0x00,
+        0x00, 0x00, 'J',  'o',
+        'h',  'n',  0x00, 0x00,
     };
 
     try std.testing.expectEqualSlices(u8, &expected, bytes);
@@ -285,9 +283,10 @@ test "writer rejects malformed nested document and malformed array" {
     );
 
     const bad_array = [_]u8{
-        14, 0, 0, 0,
-        0x02, '1', 0, 2, 0, 0, 0, 'x', 0,
-        0,
+        14,   0,   0, 0,
+        0x02, '1', 0, 2,
+        0,    0,   0, 'x',
+        0,    0,
     };
 
     try std.testing.expectError(

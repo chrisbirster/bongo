@@ -97,48 +97,28 @@ pub fn writeValue(
 ) Error!void {
     switch (value) {
         .double => |v| try writer.writeDouble(name, v),
-
         .string => |v| try writer.writeString(name, v),
-
         .document => |v| try writer.writeDocument(name, v),
-
         .array => |v| try writer.writeArray(name, v),
-
         .binary => |v| try writer.writeBinary(name, v),
-
         .undefined_value => try writer.writeUndefined(name),
-
         .object_id => |v| try writer.writeObjectId(name, v),
-
         .boolean => |v| try writer.writeBool(name, v),
-
         .datetime => |v| try writer.writeDateTime(name, v),
-
         .null_value => try writer.writeNull(name),
-
         .regex => |v| try writer.writeRegex(name, v),
-
         .db_pointer => |v| try writer.writeDbPointer(name, v),
-
         .javascript => |v| try writer.writeJavaScript(name, v),
-
         .symbol => |v| try writer.writeSymbol(name, v),
-
         .javascript_with_scope => |v| try writer.writeJavaScriptWithScope(
             name,
             v,
         ),
-
         .int32 => |v| try writer.writeInt32(name, v),
-
         .timestamp => |v| try writer.writeTimestamp(name, v),
-
         .int64 => |v| try writer.writeInt64(name, v),
-
         .decimal128 => |v| try writer.writeDecimal128(name, v),
-
         .min_key => try writer.writeMinKey(name),
-
         .max_key => try writer.writeMaxKey(name),
     }
 }
@@ -933,7 +913,7 @@ test "user-defined binary subtype survives round trip" {
     try writer.writeBinary(
         "data",
         .{
-            .subtype = types.BinarySubtype
+            .subtype = try types.BinarySubtype
                 .userDefined(0x80),
 
             .data = &.{ 9, 8 },
