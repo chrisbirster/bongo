@@ -84,7 +84,10 @@ pub const TlsConnection = struct {
         const host_name = try net.HostName.init(host);
         const now = Io.Clock.real.now(io);
 
-        var ca_bundle: std.crypto.Certificate.Bundle = .{};
+        var ca_bundle: std.crypto.Certificate.Bundle = .{
+            .map = .empty,
+            .bytes = .empty,
+        };
         errdefer ca_bundle.deinit(allocator);
 
         if (options.verify_certificate) {
@@ -149,7 +152,10 @@ pub const TlsConnection = struct {
 
         // Ownership of the CA bundle and allocated buffers has moved into
         // `self`, so disable the pre-handoff cleanup paths.
-        ca_bundle = .{};
+        ca_bundle = .{
+            .map = .empty,
+            .bytes = .empty,
+        };
 
         var entropy: [176]u8 = undefined;
         io.random(&entropy);
