@@ -128,6 +128,9 @@ pub const TlsConnection = struct {
 
         // Initialize all address-stable fields before constructing the TLS
         // client. Its reader/writer and CA pointers target these exact fields.
+        // The pre-handoff errdefers above remain the single owners of cleanup
+        // until this function returns successfully. That prevents double-closing
+        // the socket or double-freeing buffers if the TLS handshake fails.
         self.* = .{
             .allocator = allocator,
             .io = io,
@@ -141,23 +144,6 @@ pub const TlsConnection = struct {
             .socket_write_buffer = socket_write_buffer,
             .tls_read_buffer = tls_read_buffer,
             .tls_write_buffer = tls_write_buffer,
-        };
-
-        var initialized = false;
-        errdefer if (!initialized) {
-            self.stream.close(io);
-            self.ca_bundle.deinit(allocator);
-            allocator.free(self.socket_read_buffer);
-            allocator.free(self.socket_write_buffer);
-            allocator.free(self.tls_read_buffer);
-            allocator.free(self.tls_write_buffer);
-        };
-
-        // Ownership of the CA bundle and allocated buffers has moved into
-        // `self`, so disable the pre-handoff cleanup paths.
-        ca_bundle = .{
-            .map = .empty,
-            .bytes = .empty,
         };
 
         var entropy: [tls_entropy_size]u8 = undefined;
@@ -187,7 +173,6 @@ pub const TlsConnection = struct {
                 .allow_truncation_attacks = false,
             },
         );
-        initialized = true;
         return self;
     }
 
