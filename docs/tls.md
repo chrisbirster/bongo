@@ -32,11 +32,13 @@ Bongo never silently ignores client-certificate options. Zig 0.16's standard TLS
 
 ## Local integration fixture
 
-A TLS-enabled MongoDB fixture can be started with:
+A TLS-enabled MongoDB fixture can be started and tested with:
 
 ```bash
 ./scripts/start-tls-db.sh
-BONGO_TLS_INTEGRATION=1 zig build integration-test
+zig build tls-integration-test
 ```
 
-The fixture uses a short-lived self-signed certificate and listens on `localhost:27018`. The integration test deliberately disables verification for that generated certificate; normal deployments should leave both verification controls enabled or provide a trusted `tlsCAFile`.
+TLS is kept in a dedicated build step so the normal `zig build integration-test` suite only requires the standard MongoDB fixture on `127.0.0.1:27017`.
+
+The TLS fixture uses a short-lived self-signed certificate and listens on `localhost:27018`. The integration test deliberately disables verification for that generated certificate; normal deployments should leave both verification controls enabled or provide a trusted `tlsCAFile`.
