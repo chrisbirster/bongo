@@ -1,5 +1,4 @@
 const std = @import("std");
-const compression = @import("compression.zig");
 const operation_timeout = @import("operation_timeout.zig");
 
 const Io = std.Io;
@@ -9,7 +8,6 @@ const Allocator = std.mem.Allocator;
 pub const Connection = struct {
     io: Io,
     stream: net.Stream,
-    compressor: ?compression.Compressor = null,
     socket_timeout_ms: ?u32 = null,
     operation_timeout_ms: ?u64 = null,
 
@@ -63,12 +61,8 @@ pub const Connection = struct {
         self.* = undefined;
     }
 
-    pub fn setCompressor(self: *Connection, compressor: ?compression.Compressor) void {
-        self.compressor = compressor;
-    }
-
     /// Execute one command request with this connection's configured timeoutMS.
-    /// The deadline starts before compression and is shared by send + receive.
+    /// The deadline starts before send and is shared by send + receive.
     pub fn request(
         self: *Connection,
         allocator: Allocator,
@@ -91,18 +85,7 @@ pub const Connection = struct {
         timeout_ms: ?u64,
     ) ![]u8 {
         const budget = try operation_timeout.Budget.start(self.io, timeout_ms);
-
-        if (self.compressor) |compressor| {
-            const compressed = try compression.compressMessage(
-                allocator,
-                request_bytes,
-                compressor,
-            );
-            defer allocator.free(compressed);
-            try self.sendWithin(compressed, budget);
-        } else {
-            try self.sendWithin(request_bytes, budget);
-        }
+        try self.sendWithin(request_bytes, budget);
         return self.receiveWithin(
             allocator,
             default_max_message_size,
@@ -217,15 +200,7 @@ pub const Connection = struct {
         errdefer allocator.free(message);
         @memcpy(message[0..4], &length_bytes);
         try stream_reader.interface.readSliceAll(message[4..]);
-
-        if (!compression.isCompressed(message)) return message;
-        const decompressed = try compression.decompressMessage(
-            allocator,
-            message,
-            max_message_size,
-        );
-        allocator.free(message);
-        return decompressed;
+        return message;
     }
 
     fn waitUntil(io: Io, deadline: Io.Clock.Timestamp) !void {
