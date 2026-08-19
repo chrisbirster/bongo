@@ -2,7 +2,7 @@ const std = @import("std");
 const bongo = @import("bongo");
 
 test "41 - TLS transport reaches a TLS-enabled MongoDB deployment" {
-    if (!std.process.hasNonEmptyEnvVarConstant("BONGO_TLS_INTEGRATION")) return;
+    if (!std.process.hasEnvVarConstant("BONGO_TLS_INTEGRATION")) return;
 
     const allocator = std.testing.allocator;
     const io = std.testing.io;
