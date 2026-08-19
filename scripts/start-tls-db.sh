@@ -30,4 +30,4 @@ docker run -d \
   --bind_ip_all
 
 echo "TLS MongoDB fixture listening on localhost:27018"
-echo "Run: BONGO_TLS_INTEGRATION=1 zig build integration-test"
+echo "Run: zig build tls-integration-test"
