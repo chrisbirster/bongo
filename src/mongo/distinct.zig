@@ -93,6 +93,23 @@ fn commandSucceeded(value: bson.Value) bool {
     };
 }
 
+fn expectParseError(expected: anyerror, body: anytype) !void {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        body,
+        .{ .request_id = 90, .response_to = 57 },
+    );
+
+    if (parse(allocator, response, 57)) |result_value| {
+        var result = result_value;
+        result.deinit();
+        return error.TestExpectedError;
+    } else |err| {
+        try std.testing.expect(err == expected);
+    }
+}
+
 test "distinct encodes key and filter" {
     const allocator = std.testing.allocator;
 
@@ -122,6 +139,22 @@ test "distinct encodes key and filter" {
     );
 }
 
+test "distinct rejects empty key" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(
+        error.EmptyKey,
+        encode(
+            allocator,
+            57,
+            "test",
+            "users",
+            "",
+            .{},
+        ),
+    );
+}
+
 test "distinct response streams values" {
     const allocator = std.testing.allocator;
 
@@ -143,4 +176,37 @@ test "distinct response streams values" {
     try std.testing.expectEqualStrings("a", (try result.next()).?.string);
     try std.testing.expectEqualStrings("b", (try result.next()).?.string);
     try std.testing.expect((try result.next()) == null);
+}
+
+test "distinct response rejects mismatched response id" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{
+            .values = [_][]const u8{"a"},
+            .ok = @as(i32, 1),
+        },
+        .{ .request_id = 90, .response_to = 57 },
+    );
+
+    if (parse(allocator, response, 58)) |result_value| {
+        var result = result_value;
+        result.deinit();
+        return error.TestExpectedError;
+    } else |err| {
+        try std.testing.expect(err == error.UnexpectedResponse);
+    }
+}
+
+test "distinct response rejects command and values shape errors" {
+    try expectParseError(error.CommandFailed, .{ .ok = @as(i32, 0) });
+    try expectParseError(
+        error.CommandFailed,
+        .{ .values = [_][]const u8{"a"} },
+    );
+    try expectParseError(error.MissingValues, .{ .ok = @as(i32, 1) });
+    try expectParseError(
+        error.InvalidValues,
+        .{ .values = "not an array", .ok = @as(i32, 1) },
+    );
 }

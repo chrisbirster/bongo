@@ -21,4 +21,20 @@ test {
     _ = @import("integration/20_distinct.zig");
     _ = @import("integration/21_bulk_write.zig");
     _ = @import("integration/22_upsert.zig");
+    _ = @import("integration/23_write_concern.zig");
+    _ = @import("integration/24_read_concern.zig");
+    _ = @import("integration/25_find_options.zig");
+    _ = @import("integration/26_operation_options.zig");
+    _ = @import("integration/27_aggregate.zig");
+    _ = @import("integration/28_explain.zig");
+    _ = @import("integration/29_create_collection.zig");
+    _ = @import("integration/30_drop_collection.zig");
+    _ = @import("integration/31_list_collections.zig");
+    _ = @import("integration/32_rename_collection.zig");
+    _ = @import("integration/33_create_index.zig");
+    _ = @import("integration/34_drop_index.zig");
+    _ = @import("integration/35_list_indexes.zig");
+    _ = @import("integration/36_list_databases.zig");
+    _ = @import("integration/37_drop_database.zig");
+    _ = @import("integration/38_run_command.zig");
 }

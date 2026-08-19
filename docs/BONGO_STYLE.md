@@ -188,6 +188,8 @@ test {
 }
 ```
 
+Importing a module is not sufficient compile coverage for a generic Zig function. Significant public paths that use `anytype`, tuples, or other compile-time specialization must have at least one unit test that actually instantiates the path. Integration coverage is still required when behavior depends on MongoDB, but the integration suite should not be the first place a public generic function is compiled.
+
 Real MongoDB tests remain separate under `test/integration/` and are discovered through `test/integration.zig`.
 
 Before merging relevant changes:
@@ -208,6 +210,8 @@ For protocol and cryptographic work, tests should include:
 - duplicate fields when forbidden.
 - invalid transitions from valid to invalid data.
 - deterministic specification test vectors when available.
+
+A new response parser should also exercise its relevant negative branches, such as a mismatched `responseTo`, missing required fields, wrong BSON types, command failure, malformed nested data, write errors, or write-concern errors. The exact matrix depends on the response shape, but a happy-path parser test alone is not sufficient.
 
 ## Naming
 
@@ -350,6 +354,7 @@ For each change, ask:
 - Is memory ownership clear?
 - Are programmer invariants assertions and runtime failures errors?
 - Are both valid and invalid cases tested?
+- Does every significant public generic path have a unit-test instantiation?
 - Does the implementation follow the relevant MongoDB specification or RFC?
 - Does security-sensitive code avoid leaking credentials or secrets?
 - Are cryptographic comparisons and expensive operations handled safely?

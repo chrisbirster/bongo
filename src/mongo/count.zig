@@ -95,6 +95,18 @@ fn commandSucceeded(value: bson.Value) bool {
     };
 }
 
+fn expectCountError(expected: anyerror, body: anytype) !void {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        body,
+        .{ .request_id = 90, .response_to = 53 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(expected, parseCountResponse(response, 53));
+}
+
 test "countDocuments encodes query skip and limit" {
     const allocator = std.testing.allocator;
 
@@ -150,14 +162,24 @@ test "estimatedDocumentCount omits query" {
     try std.testing.expect((try bson.Reader.get(body, "query")) == null);
 }
 
-test "countDocuments rejects negative options" {
+test "countDocuments accepts zero and rejects negative options" {
     const allocator = std.testing.allocator;
+
+    const request = try encodeCountDocuments(
+        allocator,
+        55,
+        "test",
+        "users",
+        .{},
+        .{ .skip = 0, .limit = 0 },
+    );
+    defer allocator.free(request);
 
     try std.testing.expectError(
         error.InvalidSkip,
         encodeCountDocuments(
             allocator,
-            55,
+            56,
             "test",
             "users",
             .{},
@@ -169,7 +191,7 @@ test "countDocuments rejects negative options" {
         error.InvalidLimit,
         encodeCountDocuments(
             allocator,
-            56,
+            57,
             "test",
             "users",
             .{},
@@ -197,5 +219,30 @@ test "count response returns integer n" {
     try std.testing.expectEqual(
         @as(i64, 12),
         try parseCountResponse(response, 53),
+    );
+}
+
+test "count response rejects mismatched response id" {
+    const allocator = std.testing.allocator;
+    const response = try op_msg.encodeCommand(
+        allocator,
+        .{ .n = @as(i32, 1), .ok = @as(i32, 1) },
+        .{ .request_id = 90, .response_to = 53 },
+    );
+    defer allocator.free(response);
+
+    try std.testing.expectError(
+        error.UnexpectedResponse,
+        parseCountResponse(response, 54),
+    );
+}
+
+test "count response rejects command and count shape errors" {
+    try expectCountError(error.CommandFailed, .{ .ok = @as(i32, 0) });
+    try expectCountError(error.CommandFailed, .{ .n = @as(i32, 1) });
+    try expectCountError(error.MissingCount, .{ .ok = @as(i32, 1) });
+    try expectCountError(
+        error.InvalidCount,
+        .{ .n = "one", .ok = @as(i32, 1) },
     );
 }
