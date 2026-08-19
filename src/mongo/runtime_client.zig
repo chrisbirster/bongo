@@ -229,9 +229,6 @@ pub const RuntimeClient = struct {
         };
     }
 
-    /// Atomic counter primitive used by Deez for stable numeric deck/card/
-    /// review IDs. The command is a normal `findAndModify` with upsert+return
-    /// after semantics.
     pub fn findOneAndUpdate(
         self: *RuntimeClient,
         database_name: []const u8,
@@ -453,7 +450,7 @@ pub const Cursor = struct {
         batch_field: []const u8,
     ) !Cursor {
         errdefer client.allocator.free(response_bytes);
-        var parsed = try parseCursorResponse(
+        const parsed = try parseCursorResponse(
             response_bytes,
             expected_response_to,
             database_name,
