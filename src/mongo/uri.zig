@@ -195,7 +195,9 @@ fn parseHost(raw: []const u8) Error!Host {
 
 fn parsePort(raw: []const u8) Error!u16 {
     if (raw.len == 0) return error.InvalidPort;
-    return std.fmt.parseInt(u16, raw, 10) catch error.InvalidPort;
+    const port = std.fmt.parseInt(u16, raw, 10) catch return error.InvalidPort;
+    if (port == 0) return error.InvalidPort;
+    return port;
 }
 
 test "parse simple MongoDB URI" {
@@ -260,6 +262,13 @@ test "parse bracketed IPv6 safely" {
     try std.testing.expect(parsed.hosts[1].port == null);
 }
 
+test "parse accepts maximum MongoDB port" {
+    var parsed = try parse(std.testing.allocator, "mongodb://localhost:65535");
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(u16, 65535), parsed.hosts[0].port.?);
+}
+
 test "parser leaves percent encoding for BONGO-0040" {
     var parsed = try parse(
         std.testing.allocator,
@@ -280,6 +289,7 @@ test "invalid URI shapes return useful errors" {
     try std.testing.expectError(error.MissingHost, parse(std.testing.allocator, "mongodb://user@"));
     try std.testing.expectError(error.EmptyHost, parse(std.testing.allocator, "mongodb://a,,b"));
     try std.testing.expectError(error.InvalidPort, parse(std.testing.allocator, "mongodb://localhost:nope"));
+    try std.testing.expectError(error.InvalidPort, parse(std.testing.allocator, "mongodb://localhost:0"));
     try std.testing.expectError(error.InvalidPort, parse(std.testing.allocator, "mongodb://localhost:70000"));
     try std.testing.expectError(error.InvalidHost, parse(std.testing.allocator, "mongodb://2001:db8::1"));
     try std.testing.expectError(error.InvalidIpv6Host, parse(std.testing.allocator, "mongodb://[::1"));
