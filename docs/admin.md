@@ -1,17 +1,13 @@
 # Collection and index administration
 
-Bongo exposes the MongoDB management commands that have been implemented so far as top-level driver helpers operating on `Database` or `Collection` handles.
+Bongo exposes the MongoDB management commands implemented so far as top-level driver helpers operating on `Database` or `Collection` handles.
 
 ## Create a collection
 
 ```zig
 const database = client.database("app");
 
-try bongo.createCollection(
-    database,
-    "events",
-    .{},
-);
+try bongo.createCollection(database, "events", .{});
 ```
 
 Collection options are flattened into MongoDB's `create` command, so supported BSON options can be supplied without Bongo hard-coding every server option:
@@ -58,9 +54,7 @@ const events = database.collection("events");
 try bongo.renameCollection(events, "archived_events", false);
 ```
 
-The third argument controls MongoDB's `dropTarget` option.
-
-MongoDB's `renameCollection` command runs against the `admin` database and uses fully qualified source/target namespaces internally; Bongo constructs those namespaces for the caller.
+The third argument controls MongoDB's `dropTarget` option. MongoDB's `renameCollection` command runs against the `admin` database and uses fully qualified source/target namespaces internally; Bongo constructs those namespaces for the caller.
 
 ## Drop a collection
 
@@ -95,13 +89,30 @@ The key document may contain one or multiple fields. The caller supplies the ind
 - `num_indexes_after`
 - `created_collection_automatically`
 
+## Drop indexes
+
+Bongo wraps MongoDB's `dropIndexes` command with `dropIndex()`:
+
+```zig
+try bongo.dropIndex(users, "first_last_unique");
+```
+
+The selector is encoded as BSON, so callers can use an index name or key specification. MongoDB's special `"*"` selector removes all droppable non-`_id` indexes:
+
+```zig
+try bongo.dropIndex(users, "*");
+```
+
+Configured client write concern is included automatically. Server failures such as a missing named index are returned as command errors rather than treated as success.
+
+MongoDB command reference: <https://www.mongodb.com/docs/manual/reference/command/dropIndexes/>
+
 ## What is not implemented yet
 
 The management surface is intentionally incomplete at the current milestone:
 
-- #32 — `dropIndex`
 - #33 — `listIndexes`
 - #34 — `listDatabases`
 - #35 — `dropDatabase`
 
-Those should be completed before this document describes a full collection/index/database administration API.
+Those should be completed before this document describes the current collection/index/database administration milestone as complete.
