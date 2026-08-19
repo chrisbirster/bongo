@@ -29,10 +29,42 @@ The structural parser understands:
 - an optional default database;
 - query-string option name/value pairs.
 
-## What structural parsing does not do
+## Normalized connection options
 
-The first parsing layer deliberately preserves percent-encoded text and raw option values. For example, `%40` remains `%40` instead of becoming `@`, and `retryWrites=true` remains a raw option pair rather than immediately becoming a boolean.
+`bongo.parseConnectionOptions(allocator, uri)` builds on the structural parser and returns an owned `bongo.NormalizedConnectionOptions` value suitable for later connection-layer stages.
 
-That separation is intentional. Connection-string normalization and validation are responsible for percent decoding, typed boolean/numeric option parsing, duplicate handling, and incompatible-option checks. Keeping those rules out of structural parsing makes malformed URI shapes distinguishable from invalid MongoDB option combinations.
+```zig
+var options = try bongo.parseConnectionOptions(
+    allocator,
+    "mongodb://alice:secret@DB.EXAMPLE/app?tls=true&connectTimeoutMS=5000",
+);
+defer options.deinit();
 
-`mongodb+srv://` discovery, TLS transport setup, authentication negotiation, compression, and timeout behavior are separate connection-layer stages as well.
+const host = options.hosts[0].name;              // "db.example"
+const port = options.hosts[0].port;              // 27017
+const tls = options.tls.?;                       // true
+const connect_timeout = options.connect_timeout_ms.?; // 5000
+```
+
+Normalization currently provides the typed settings needed by the rest of the v0.3 connection work:
+
+- percent-decoded UTF-8 credentials, database names, file paths, and string options;
+- lowercase host names with a default port of `27017`;
+- authentication mechanism and authentication-source validation;
+- boolean topology/TLS options;
+- connection, socket, and client-side operation timeout values;
+- compressor lists;
+- TLS certificate/CA settings;
+- SRV-specific option fields for the DNS discovery layer.
+
+Recognized scalar options are intentionally strict: conflicting or repeated settings return deterministic errors instead of leaving precedence undefined. `tls` and its legacy alias `ssl` are the exception required by the MongoDB URI rules: repeated instances are accepted when all values agree and rejected when they conflict.
+
+Bongo also rejects known incompatible combinations such as `directConnection=true` with multiple seed hosts, load-balanced mode with multiple seeds or a replica set, conflicting insecure TLS controls, invalid authentication requirements, and SRV-only options on a standard `mongodb://` URI.
+
+Unknown URI options are ignored for forward compatibility. Bongo does not yet have a logging subsystem to emit the MongoDB specification's recommended warning for unsupported keys.
+
+## Layer boundaries
+
+Structural parsing deliberately preserves percent-encoded text and raw option values. For example, `%40` remains `%40` instead of becoming `@`, and `retryWrites=true` remains a raw option pair rather than immediately becoming a boolean. Normalization is the layer that decodes and validates those values.
+
+`mongodb+srv://` discovery, TLS transport setup, authentication negotiation, compression, and timeout enforcement remain separate connection-layer stages so each can be tested independently.
