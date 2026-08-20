@@ -396,14 +396,20 @@ pub const RuntimeClient = struct {
     }
 
     fn openSelectedTransport(self: *RuntimeClient) !Transport {
-        var transport: ?Transport = try self.openTransport(self.selected_host);
+        var transport: ?Transport = self.openTransport(self.selected_host) catch
+            return self.openWritableTransport();
         errdefer if (transport) |*owned| owned.deinit();
 
-        const description = try topology.hello(
+        const description = topology.hello(
             &transport.?,
             self.allocator,
             self.takeRequestId(),
-        );
+        ) catch {
+            var stale = transport.?;
+            transport = null;
+            stale.deinit();
+            return self.openWritableTransport();
+        };
         if (!description.usableForWrites() and
             self.connection_options.load_balanced != true)
         {
