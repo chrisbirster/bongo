@@ -1,0 +1,16 @@
+services:
+  bongo-linux-validation:
+    build:
+      context: .
+      dockerfile: Dockerfile.linux-test
+      args:
+        ZIG_VERSION: "0.16.0"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: secretpassword
+    # These ports are not required by the tests because MongoDB and Bongo run
+    # inside the same Linux container. They are exposed only for local debugging.
+    ports:
+      - "27017:27017"
+      - "27018:27018"
+      - "27019:27019"
