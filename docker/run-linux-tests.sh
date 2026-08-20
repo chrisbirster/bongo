@@ -16,16 +16,16 @@ stop_mongo() {
   MONGO_PID=""
 }
 
+cleanup() {
+  stop_mongo
+}
+trap cleanup EXIT INT TERM
+
 reset_dbpath() {
   local path="$1"
   mkdir -p "$path"
   find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 }
-
-cleanup() {
-  stop_mongo
-}
-trap cleanup EXIT INT TERM
 
 wait_plain_auth() {
   for _ in $(seq 1 90); do
@@ -100,8 +100,6 @@ echo "==> Unit tests"
 zig build test
 
 echo "==> Plain MongoDB integration fixture"
-# /data/db is a volume mount in the official MongoDB image. Clear its contents
-# without removing the mountpoint itself.
 reset_dbpath /data/db
 export MONGO_INITDB_ROOT_USERNAME="$MONGO_USER"
 export MONGO_INITDB_ROOT_PASSWORD="$MONGO_PASSWORD"
@@ -127,6 +125,10 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   >/dev/null 2>&1
 cat "$ROOT/.bongo-tls/server-key.pem" "$ROOT/.bongo-tls/server-cert.pem" \
   > "$ROOT/.bongo-tls/mongodb.pem"
+# docker-entrypoint.sh drops privileges before starting mongod. Keep the
+# private-key bundle restricted, but make the mongodb user its owner so mongod
+# can read it after the privilege drop.
+chown mongodb:mongodb "$ROOT/.bongo-tls/mongodb.pem" "$ROOT/.bongo-tls/server-cert.pem"
 chmod 600 "$ROOT/.bongo-tls/mongodb.pem"
 chmod 644 "$ROOT/.bongo-tls/server-cert.pem"
 
