@@ -13,7 +13,9 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
 cat "$tls_dir/server-key.pem" "$tls_dir/server-cert.pem" > "$tls_dir/mongodb.pem"
-chmod 600 "$tls_dir/mongodb.pem"
+# This is a disposable local/CI fixture. The bind-mounted file must be readable
+# by the non-root `mongod` user inside the official container.
+chmod 644 "$tls_dir/mongodb.pem" "$tls_dir/server-cert.pem"
 
 docker rm -f mongodb-tls >/dev/null 2>&1 || true
 
