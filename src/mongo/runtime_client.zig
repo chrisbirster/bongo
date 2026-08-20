@@ -510,7 +510,7 @@ pub const Cursor = struct {
         errdefer client.allocator.free(owned_db);
         const owned_collection = try client.allocator.dupe(u8, collection_name);
         errdefer client.allocator.free(owned_collection);
-        return .{
+        var cursor: Cursor = .{
             .client = client,
             .transport = transport,
             .database_name = owned_db,
@@ -519,6 +519,10 @@ pub const Cursor = struct {
             .batch_reader = try bson.Reader.init(parsed.batch),
             .cursor_id = parsed.cursor_id,
         };
+        if (cursor.cursor_id == 0) {
+            client.releaseTransport(&cursor.transport);
+        }
+        return cursor;
     }
 
     pub fn next(self: *Cursor) !?[]const u8 {
@@ -602,6 +606,9 @@ pub const Cursor = struct {
         self.batch_reader = reader;
         self.cursor_id = parsed.cursor_id;
         self.client.allocator.free(old);
+        if (self.cursor_id == 0) {
+            self.client.releaseTransport(&self.transport);
+        }
     }
 };
 
