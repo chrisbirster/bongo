@@ -1,4 +1,5 @@
 const std = @import("std");
+const connect_timeout = @import("connect_timeout.zig");
 const operation_timeout = @import("operation_timeout.zig");
 
 const Io = std.Io;
@@ -44,13 +45,13 @@ pub const Connection = struct {
         port: u16,
         options: Options,
     ) !Connection {
-        const host_name = try net.HostName.init(host);
-        const stream = host_name.connect(io, port, .{
-            .mode = .stream,
-            .protocol = .tcp,
-            .timeout = timeoutFromMs(options.connect_timeout_ms),
-        }) catch |err| switch (err) {
-            error.Timeout => return error.ConnectTimeout,
+        const stream = connect_timeout.connect(
+            io,
+            host,
+            port,
+            options.connect_timeout_ms,
+        ) catch |err| switch (err) {
+            error.ConnectTimeout => return error.ConnectTimeout,
             else => |e| return e,
         };
         return .{
@@ -234,23 +235,4 @@ pub const Connection = struct {
     fn waitUntil(io: Io, deadline: Io.Clock.Timestamp) !void {
         try deadline.wait(io);
     }
-
-    fn timeoutFromMs(value: ?u32) Io.Timeout {
-        const milliseconds = activeTimeout(value) orelse return .none;
-        return .{ .duration = .{
-            .raw = Io.Duration.fromMilliseconds(milliseconds),
-            .clock = .awake,
-        } };
-    }
-
-    fn activeTimeout(value: ?u32) ?u32 {
-        const milliseconds = value orelse return null;
-        return if (milliseconds == 0) null else milliseconds;
-    }
 };
-
-test "network timeout option maps zero to unlimited" {
-    try std.testing.expect(Connection.activeTimeout(null) == null);
-    try std.testing.expect(Connection.activeTimeout(0) == null);
-    try std.testing.expectEqual(@as(u32, 5000), Connection.activeTimeout(5000).?);
-}

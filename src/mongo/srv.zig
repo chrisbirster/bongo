@@ -323,7 +323,8 @@ fn parseTxtResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
         return null;
     }
     try validateTxtOptions(txt.items);
-    return txt.toOwnedSlice(allocator);
+    const owned = try txt.toOwnedSlice(allocator);
+    return owned;
 }
 
 fn validateTxtOptions(txt: []const u8) Error!void {

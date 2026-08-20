@@ -4,28 +4,36 @@ Bongo follows semantic versioning while the project is pre-1.0. Minor releases (
 
 ## 0.3.0 — 2026-08-19
 
-Bongo's third application-facing release hardens connection setup with URI configuration, broader authentication compatibility, DNS discovery, and bounded network and operation timing.
+Bongo's third application-facing release hardens connection setup and adds the managed runtime capabilities needed by Deez: URI/SRV configuration, verified TLS + SCRAM, writable-server selection, bounded pooling, sessions, and transactions.
 
 ### Added
 
 - `mongodb://` connection-string parsing with owned structural results for credentials, multiple hosts, database names, query options, and IPv6-safe addresses.
 - Typed URI option normalization with percent decoding, authentication/TLS/topology settings, timeout values, compressor preferences, and deterministic security/conflict validation.
 - `mongodb+srv://` SRV/TXT discovery with parent-domain validation, TXT default merging, `srvServiceName`, `srvMaxHosts`, and implicit TLS configuration.
-- SCRAM-SHA-1 compatibility alongside the existing SCRAM-SHA-256 implementation.
+- Verified server-authenticated TLS on Zig 0.16 with CA-chain and host-name verification enabled by default.
+- SCRAM-SHA-1 compatibility alongside the existing SCRAM-SHA-256 implementation, including SCRAM over TLS.
 - Authentication handshake negotiation that prefers SCRAM-SHA-256, falls back to SCRAM-SHA-1, and resumes speculative SCRAM-SHA-256 authentication when the server accepts it.
-- MONGODB-X509 authentication command and connection-configuration validation.
-- Configurable DNS/TCP connection-establishment and per-socket I/O timeouts.
-- Client-side `timeoutMS` operation budgets that carry one monotonic deadline across send and receive.
-- Connection-layer documentation for URI parsing, SRV discovery, TLS configuration boundaries, authentication, and timeout behavior.
+- MONGODB-X509 authentication command and connection-configuration validation; end-to-end client-certificate transport remains unsupported on Zig 0.16.
+- Configurable DNS/TCP connection-establishment, socket I/O, and whole-operation timeouts. Bongo works around Zig 0.16's unfinished POSIX `Io.Threaded` connect-timeout path with an `Io.Select` deadline race.
+- Experimental URI-driven `RuntimeClient` for application code that needs SRV, TLS, managed authentication, writable-server probing, reusable transports, sessions, and transactions.
+- Writable-server probing/selection across configured and SRV-discovered seeds.
+- A bounded reusable transport pool in `RuntimeClient`.
+- Logical sessions and transaction numbers.
+- Pinned-connection transactions with `startTransaction`, `commitTransaction`, and `abortTransaction`, live-tested against a MongoDB replica set.
+- Transaction operations required by Deez, including transactional `insertOne` plus scheduler-state `updateOne`.
+- Query/update operator helpers for normal Zig syntax, including `lte`, `gte`, `in`, `set`, and `inc`.
+- Canonical documentation of the Zig 0.16 networking/TLS compatibility boundary in `docs/zig-0.16-tls-gap.md`.
+- Dedicated Zig 0.16 compile, TLS+SCRAM, and replica-set transaction CI gates.
 
 ### Current limitations
 
-- One connection per `Client`; no connection pool yet.
-- No topology discovery or topology-aware server selection yet.
-- Read preference is modeled but is not yet used for multi-server routing.
-- No sessions, retryable operations, or transactions yet.
-- Runtime TLS is not enabled in v0.3. TLS URI/configuration fields remain available for forward compatibility, but release validation against TLS-enabled MongoDB exposed a Zig 0.16 standard-library handshake limitation. Runtime TLS remains tracked by BONGO-0042.
-- End-to-end MONGODB-X509 is therefore not available through a built-in Bongo transport in v0.3. The X.509 command/configuration layer remains implemented for a compatible secure transport.
+- The original `Client` remains the simpler single-server API. Managed topology, pooling, sessions, and transactions live in the experimental `RuntimeClient` while that API matures.
+- `RuntimeClient` selects a writable server by probing configured/SRV seeds; full SDAM monitoring, background topology updates, and the complete MongoDB server-selection specification are not implemented yet.
+- Read preference is modeled, but the managed client currently targets the writable server needed by Deez rather than implementing all read-preference routing modes.
+- Retryable reads/writes and the complete transaction retry/error-label specification are not yet complete.
+- Zig 0.16's standard TLS client does not expose the client-certificate/private-key path needed for built-in mutual TLS and end-to-end `MONGODB-X509`. Server-authenticated TLS + SCRAM is supported and live-tested.
+- SCRAM-SHA-256 password preparation currently supports printable ASCII; complete SASLprep coverage remains unfinished.
 - Wire compression is not enabled in v0.3. The URI layer recognizes compressor preferences for forward compatibility; MongoDB `OP_COMPRESSED` support remains deferred under BONGO-0046.
 
 ## 0.2.0 — 2026-08-18
