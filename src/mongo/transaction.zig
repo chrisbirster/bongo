@@ -1,6 +1,6 @@
 const std = @import("std");
-const bson = @import("../bson.zig");
 const crud = @import("crud.zig");
+const error_response = @import("error_response.zig");
 const op_msg = @import("op_msg.zig");
 const session_mod = @import("session.zig");
 const Transport = @import("transport.zig").Transport;
@@ -13,6 +13,8 @@ pub const Error = error{
     UnexpectedResponse,
     CommandFailed,
     InvalidTransactionState,
+    TransientTransactionError,
+    UnknownTransactionCommitResult,
 };
 
 pub fn begin(session: *Session, options: Options) !void {
@@ -65,8 +67,14 @@ pub fn insertOne(
         );
     defer allocator.free(request);
 
-    const response = try transport.request(allocator, request);
+    const response = transport.request(allocator, request) catch |err| {
+        if (error_response.isRetryableTransportError(err)) {
+            return error.TransientTransactionError;
+        }
+        return err;
+    };
     defer allocator.free(response);
+    try validateTransactionOperation(response, request_id);
     const result = try crud.parseInsertOneResponse(response, request_id);
     try session.markCommandSucceeded();
     return result;
@@ -132,8 +140,14 @@ pub fn updateOne(
         );
     defer allocator.free(request);
 
-    const response = try transport.request(allocator, request);
+    const response = transport.request(allocator, request) catch |err| {
+        if (error_response.isRetryableTransportError(err)) {
+            return error.TransientTransactionError;
+        }
+        return err;
+    };
     defer allocator.free(response);
+    try validateTransactionOperation(response, request_id);
     var result = try crud.parseUpdateResponse(allocator, response, request_id);
     errdefer result.deinit();
     try session.markCommandSucceeded();
@@ -201,7 +215,23 @@ pub fn commit(
         );
     defer allocator.free(request);
 
-    try executeCommand(transport, allocator, request, request_id);
+    const response = transport.request(allocator, request) catch |err| {
+        if (error_response.isRetryableTransportError(err)) {
+            return error.UnknownTransactionCommitResult;
+        }
+        return err;
+    };
+    defer allocator.free(response);
+    const status = try error_response.inspect(response, request_id);
+    if (!status.ok) {
+        if (status.unknown_transaction_commit or status.retryable_write) {
+            return error.UnknownTransactionCommitResult;
+        }
+        if (status.transient_transaction) {
+            return error.TransientTransactionError;
+        }
+        return error.CommandFailed;
+    }
     try session.markCommitted();
 }
 
@@ -234,7 +264,10 @@ pub fn abort(
     );
     defer allocator.free(request);
 
-    try executeCommand(transport, allocator, request, request_id);
+    const response = try transport.request(allocator, request);
+    defer allocator.free(response);
+    const status = try error_response.inspect(response, request_id);
+    if (!status.ok) return error.CommandFailed;
     try session.markAborted();
 }
 
@@ -247,25 +280,14 @@ fn readConcernDocument(session: *const Session) struct { level: []const u8 } {
     };
 }
 
-fn executeCommand(
-    transport: *Transport,
-    allocator: Allocator,
-    request: []const u8,
+fn validateTransactionOperation(
+    response: []const u8,
     request_id: i32,
 ) !void {
-    const response = try transport.request(allocator, request);
-    defer allocator.free(response);
-    const message = try op_msg.decode(response);
-    if (message.header.response_to != request_id) return error.UnexpectedResponse;
-    const body = try message.body();
-    const ok = (try bson.Reader.get(body, "ok")) orelse return error.CommandFailed;
-    const succeeded = switch (ok) {
-        .double => |v| v == 1.0,
-        .int32 => |v| v == 1,
-        .int64 => |v| v == 1,
-        else => false,
-    };
-    if (!succeeded) return error.CommandFailed;
+    const status = try error_response.inspect(response, request_id);
+    if (status.ok) return;
+    if (status.transient_transaction) return error.TransientTransactionError;
+    return error.CommandFailed;
 }
 
 test "transaction state begins locally before first command" {
@@ -273,4 +295,14 @@ test "transaction state begins locally before first command" {
     try begin(&session, .{});
     try std.testing.expect(session.isFirstTransactionCommand());
     try std.testing.expectEqual(@as(i64, 0), session.txn_number);
+}
+
+test "transaction response preserves transient error labels" {
+    const body = try @import("../bson.zig").encode(std.testing.allocator, .{
+        .ok = @as(i32, 0),
+        .errorLabels = [_][]const u8{"TransientTransactionError"},
+    });
+    defer std.testing.allocator.free(body);
+    const status = try error_response.inspectBody(body);
+    try std.testing.expect(status.transient_transaction);
 }
