@@ -1,0 +1,36 @@
+name: Live MongoDB
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tls-scram:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Start TLS MongoDB fixture
+        run: bash ./scripts/start-tls-db.sh
+      - name: Test verified TLS + SCRAM
+        run: zig build tls-integration-test
+      - name: Stop TLS fixture
+        if: always()
+        run: docker rm -f mongodb-tls >/dev/null 2>&1 || true
+
+  transactions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Start replica-set MongoDB fixture
+        run: bash ./scripts/start-replica-db.sh
+      - name: Test sessions and transactions
+        run: zig build runtime-integration-test
+      - name: Stop replica-set fixture
+        if: always()
+        run: docker rm -f mongodb-rs >/dev/null 2>&1 || true
