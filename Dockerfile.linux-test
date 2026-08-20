@@ -1,0 +1,37 @@
+FROM mongo:latest
+
+USER root
+
+ARG ZIG_VERSION=0.16.0
+ARG TARGETARCH
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        openssl \
+        python3 \
+        xz-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH:-}"; \
+    if [ -z "$arch" ]; then arch="$(dpkg --print-architecture)"; fi; \
+    case "$arch" in \
+        amd64) zig_arch="x86_64" ;; \
+        arm64) zig_arch="aarch64" ;; \
+        *) echo "Unsupported Docker architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz" \
+      -o /tmp/zig.tar.xz; \
+    mkdir -p /opt/zig; \
+    tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
+    ln -s /opt/zig/zig /usr/local/bin/zig; \
+    rm /tmp/zig.tar.xz; \
+    zig version
+
+WORKDIR /workspace
+COPY . /workspace
+
+RUN chmod +x /workspace/docker/run-linux-tests.sh
+
+ENTRYPOINT ["/workspace/docker/run-linux-tests.sh"]
