@@ -113,9 +113,6 @@ test "42 - runtime client reselects when remembered host is unreachable" {
     );
     defer client.deinit();
 
-    // connectUri skips the dead first seed and selects localhost:27019. Force
-    // the remembered index back to the dead seed so the next newly-created
-    // connection must recover by probing the configured seed list again.
     client.selected_host = 0;
 
     var transaction = try client.beginTransaction(.{});
@@ -168,9 +165,6 @@ test "42 - exhausted cursor releases its transport before deinit" {
 
     try std.testing.expect((try cursor.next()) != null);
 
-    // The cursor object and its firstBatch bytes are deliberately still alive.
-    // Since the server cursor is exhausted, the only pool connection must have
-    // been released already for this operation to succeed.
     _ = try client.insertOne(database, collection, .{
         ._id = @as(i64, 42004),
         .value = @as(i32, 2),
@@ -178,4 +172,40 @@ test "42 - exhausted cursor releases its transport before deinit" {
 
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42003) });
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42004) });
+}
+
+test "42 - RuntimeClient checked deinit rejects active child handles" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const database = "bongo_lifetime";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27019/bongo_lifetime?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    var cleaned = false;
+    defer if (!cleaned) client.deinit();
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42005) });
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 42005),
+        .value = @as(i32, 5),
+    });
+
+    var cursor = try client.find(
+        database,
+        collection,
+        .{ ._id = @as(i64, 42005) },
+        .{ .limit = @as(i64, 1) },
+    );
+
+    try std.testing.expectError(error.ActiveHandles, client.deinitChecked());
+    cursor.deinit();
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42005) });
+    try client.deinitChecked();
+    cleaned = true;
 }
