@@ -109,8 +109,8 @@ pub const RuntimeClient = struct {
         document: anytype,
     ) !crud.InsertOneResult {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        defer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeInsertOne(
             self.allocator,
@@ -120,7 +120,7 @@ pub const RuntimeClient = struct {
             document,
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
+        const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
         return crud.parseInsertOneResponse(response, request_id);
     }
@@ -134,8 +134,8 @@ pub const RuntimeClient = struct {
         upsert: bool,
     ) !crud.UpdateResult {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        defer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeUpdate(
             self.allocator,
@@ -148,7 +148,7 @@ pub const RuntimeClient = struct {
             upsert,
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
+        const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
         return crud.parseUpdateResponse(self.allocator, response, request_id);
     }
@@ -160,8 +160,8 @@ pub const RuntimeClient = struct {
         filter: anytype,
     ) !crud.DeleteResult {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        defer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeDeleteOne(
             self.allocator,
@@ -171,7 +171,7 @@ pub const RuntimeClient = struct {
             filter,
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
+        const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
         return crud.parseDeleteResponse(response, request_id);
     }
@@ -184,8 +184,8 @@ pub const RuntimeClient = struct {
         options: anytype,
     ) !Cursor {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        errdefer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        errdefer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try find_options.encodeFind(
             self.allocator,
@@ -197,16 +197,18 @@ pub const RuntimeClient = struct {
             null,
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
-        return Cursor.init(
+        const response = try self.requestCheckedOut(&transport, request);
+        const cursor = try Cursor.init(
             self,
-            transport,
+            transport.?,
             response,
             request_id,
             database_name,
             collection_name,
             "firstBatch",
         );
+        transport = null;
+        return cursor;
     }
 
     pub fn findOne(
@@ -238,8 +240,8 @@ pub const RuntimeClient = struct {
         upsert: bool,
     ) !?OwnedDocument {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        defer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try op_msg.encodeCommand(
             self.allocator,
@@ -254,7 +256,7 @@ pub const RuntimeClient = struct {
             .{ .request_id = request_id },
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
+        const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
         const bytes = (try find_and_modify.parseDocumentResponse(
             self.allocator,
@@ -273,8 +275,8 @@ pub const RuntimeClient = struct {
         options: anytype,
     ) !void {
         try validateNamespace(database_name, collection_name);
-        var transport = try self.checkout();
-        defer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try index_admin.encodeCreateIndex(
             self.allocator,
@@ -287,7 +289,7 @@ pub const RuntimeClient = struct {
             null,
         );
         defer self.allocator.free(request);
-        const response = try transport.request(self.allocator, request);
+        const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
         _ = try command_response.validate(response, request_id);
     }
@@ -298,13 +300,15 @@ pub const RuntimeClient = struct {
     ) !Transaction {
         if (!self.supports_sessions) return error.SessionsUnsupported;
         if (!self.supports_transactions) return error.TransactionsUnsupported;
-        var transport = try self.checkout();
-        errdefer self.checkin(transport) catch transport.deinit();
+        var transport: ?Transport = try self.checkout();
+        errdefer self.releaseTransport(&transport);
         var session = session_mod.Session.init(self.io);
         try transaction_ops.begin(&session, options);
+        const owned_transport = transport.?;
+        transport = null;
         return .{
             .client = self,
-            .transport = transport,
+            .transport = owned_transport,
             .session = session,
         };
     }
@@ -318,13 +322,48 @@ pub const RuntimeClient = struct {
         return transport;
     }
 
-    fn checkin(self: *RuntimeClient, transport: Transport) !void {
-        self.pool.put(transport) catch |err| {
-            var doomed = transport;
-            doomed.deinit();
-            self.pool.noteDiscarded();
-            return err;
+    /// Return a healthy checked-out transport to the idle pool. This method
+    /// owns cleanup if growing the idle list fails, so callers must not attempt
+    /// a second deinit after calling it.
+    fn checkin(self: *RuntimeClient, transport: Transport) void {
+        self.pool.put(transport) catch {
+            self.discard(transport);
         };
+    }
+
+    fn releaseTransport(self: *RuntimeClient, transport: *?Transport) void {
+        const owned = transport.* orelse return;
+        transport.* = null;
+        self.checkin(owned);
+    }
+
+    fn discard(self: *RuntimeClient, transport: Transport) void {
+        var doomed = transport;
+        doomed.deinit();
+        self.pool.noteDiscarded();
+    }
+
+    fn discardTransport(self: *RuntimeClient, transport: *?Transport) void {
+        const owned = transport.* orelse return;
+        transport.* = null;
+        self.discard(owned);
+    }
+
+    /// A request error can leave a stream partially written or with an unread
+    /// response still pending. Never return such a transport to the pool,
+    /// including after a client-side operation timeout.
+    fn requestCheckedOut(
+        self: *RuntimeClient,
+        transport: *?Transport,
+        request_bytes: []const u8,
+    ) ![]u8 {
+        if (transport.*) |*owned| {
+            return owned.request(self.allocator, request_bytes) catch |err| {
+                self.discardTransport(transport);
+                return err;
+            };
+        }
+        return error.UnexpectedResponse;
     }
 
     fn openWritableTransport(self: *RuntimeClient) !Transport {
@@ -497,7 +536,13 @@ pub const Cursor = struct {
                 .{ .request_id = request_id },
             );
             defer self.client.allocator.free(request);
-            const response = try self.transport.?.request(self.client.allocator, request);
+            const response = self.client.requestCheckedOut(
+                &self.transport,
+                request,
+            ) catch |err| {
+                self.cursor_id = 0;
+                return err;
+            };
             defer self.client.allocator.free(response);
             _ = try command_response.validate(response, request_id);
             self.cursor_id = 0;
@@ -509,13 +554,7 @@ pub const Cursor = struct {
         self.client.allocator.free(self.response_bytes);
         self.client.allocator.free(self.database_name);
         self.client.allocator.free(self.collection_name);
-        if (self.transport) |transport| {
-            self.client.checkin(transport) catch {
-                var doomed = transport;
-                doomed.deinit();
-                self.client.pool.noteDiscarded();
-            };
-        }
+        self.client.releaseTransport(&self.transport);
         self.* = undefined;
     }
 
@@ -531,7 +570,14 @@ pub const Cursor = struct {
             .{ .request_id = request_id },
         );
         defer self.client.allocator.free(request);
-        const response = try self.transport.?.request(self.client.allocator, request);
+        const response = self.client.requestCheckedOut(
+            &self.transport,
+            request,
+        ) catch |err| {
+            self.closed = true;
+            self.cursor_id = 0;
+            return err;
+        };
         errdefer self.client.allocator.free(response);
         const parsed = try parseCursorResponse(
             response,
@@ -561,15 +607,22 @@ pub const Transaction = struct {
         collection_name: []const u8,
         document: anytype,
     ) !crud.InsertOneResult {
+        const transport = if (self.transport) |*owned| owned else
+            return error.InvalidTransactionState;
+        var transport_failed = false;
         return transaction_ops.insertOne(
-            &self.transport.?,
+            transport,
             self.client.allocator,
             &self.session,
             self.client.takeRequestId(),
             database_name,
             collection_name,
             document,
-        );
+            &transport_failed,
+        ) catch |err| {
+            if (transport_failed) self.client.discardTransport(&self.transport);
+            return err;
+        };
     }
 
     pub fn updateOne(
@@ -580,8 +633,11 @@ pub const Transaction = struct {
         update: anytype,
         upsert: bool,
     ) !crud.UpdateResult {
+        const transport = if (self.transport) |*owned| owned else
+            return error.InvalidTransactionState;
+        var transport_failed = false;
         return transaction_ops.updateOne(
-            &self.transport.?,
+            transport,
             self.client.allocator,
             &self.session,
             self.client.takeRequestId(),
@@ -590,41 +646,57 @@ pub const Transaction = struct {
             filter,
             update,
             upsert,
-        );
+            &transport_failed,
+        ) catch |err| {
+            if (transport_failed) self.client.discardTransport(&self.transport);
+            return err;
+        };
     }
 
     pub fn commit(self: *Transaction) !void {
-        try transaction_ops.commit(
-            &self.transport.?,
+        const transport = if (self.transport) |*owned| owned else
+            return error.InvalidTransactionState;
+        var transport_failed = false;
+        transaction_ops.commit(
+            transport,
             self.client.allocator,
             &self.session,
             self.client.takeRequestId(),
-        );
+            &transport_failed,
+        ) catch |err| {
+            if (transport_failed) self.client.discardTransport(&self.transport);
+            return err;
+        };
         self.finished = true;
-        try self.release();
+        self.release();
     }
 
     pub fn abort(self: *Transaction) !void {
-        try transaction_ops.abort(
-            &self.transport.?,
+        const transport = if (self.transport) |*owned| owned else
+            return error.InvalidTransactionState;
+        var transport_failed = false;
+        transaction_ops.abort(
+            transport,
             self.client.allocator,
             &self.session,
             self.client.takeRequestId(),
-        );
+            &transport_failed,
+        ) catch |err| {
+            if (transport_failed) self.client.discardTransport(&self.transport);
+            return err;
+        };
         self.finished = true;
-        try self.release();
+        self.release();
     }
 
     pub fn deinit(self: *Transaction) void {
         if (!self.finished and self.transport != null) self.abort() catch {};
-        if (self.transport != null) self.release() catch {};
+        if (self.transport != null) self.release();
         self.* = undefined;
     }
 
-    fn release(self: *Transaction) !void {
-        const transport = self.transport orelse return;
-        self.transport = null;
-        try self.client.checkin(transport);
+    fn release(self: *Transaction) void {
+        self.client.releaseTransport(&self.transport);
     }
 };
 

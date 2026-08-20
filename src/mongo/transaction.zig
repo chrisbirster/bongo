@@ -17,6 +17,12 @@ pub const Error = error{
     UnknownTransactionCommitResult,
 };
 
+const RequestKind = enum {
+    operation,
+    commit,
+    abort,
+};
+
 pub fn begin(session: *Session, options: Options) !void {
     try session.beginTransaction(options);
 }
@@ -30,6 +36,7 @@ pub fn insertOne(
     database_name: []const u8,
     collection_name: []const u8,
     document: anytype,
+    transport_failed: *bool,
 ) !crud.InsertOneResult {
     const documents = [_]@TypeOf(document){document};
     const first = session.isFirstTransactionCommand();
@@ -68,10 +75,7 @@ pub fn insertOne(
     defer allocator.free(request);
 
     const response = transport.request(allocator, request) catch |err| {
-        if (error_response.isRetryableTransportError(err)) {
-            return error.TransientTransactionError;
-        }
-        return err;
+        return mapRequestError(transport_failed, err, .operation);
     };
     defer allocator.free(response);
     try validateTransactionOperation(response, request_id);
@@ -92,6 +96,7 @@ pub fn updateOne(
     filter: anytype,
     update: anytype,
     upsert: bool,
+    transport_failed: *bool,
 ) !crud.UpdateResult {
     const UpdateSpec = struct {
         q: @TypeOf(filter),
@@ -141,10 +146,7 @@ pub fn updateOne(
     defer allocator.free(request);
 
     const response = transport.request(allocator, request) catch |err| {
-        if (error_response.isRetryableTransportError(err)) {
-            return error.TransientTransactionError;
-        }
-        return err;
+        return mapRequestError(transport_failed, err, .operation);
     };
     defer allocator.free(response);
     try validateTransactionOperation(response, request_id);
@@ -159,6 +161,7 @@ pub fn commit(
     allocator: Allocator,
     session: *Session,
     request_id: i32,
+    transport_failed: *bool,
 ) !void {
     switch (session.transaction_state) {
         .starting => {
@@ -216,10 +219,7 @@ pub fn commit(
     defer allocator.free(request);
 
     const response = transport.request(allocator, request) catch |err| {
-        if (error_response.isRetryableTransportError(err)) {
-            return error.UnknownTransactionCommitResult;
-        }
-        return err;
+        return mapRequestError(transport_failed, err, .commit);
     };
     defer allocator.free(response);
     const status = try error_response.inspect(response, request_id);
@@ -240,6 +240,7 @@ pub fn abort(
     allocator: Allocator,
     session: *Session,
     request_id: i32,
+    transport_failed: *bool,
 ) !void {
     switch (session.transaction_state) {
         .starting => {
@@ -264,11 +265,35 @@ pub fn abort(
     );
     defer allocator.free(request);
 
-    const response = try transport.request(allocator, request);
+    const response = transport.request(allocator, request) catch |err| {
+        return mapRequestError(transport_failed, err, .abort);
+    };
     defer allocator.free(response);
     const status = try error_response.inspect(response, request_id);
     if (!status.ok) return error.CommandFailed;
     try session.markAborted();
+}
+
+fn mapRequestError(
+    transport_failed: *bool,
+    err: anyerror,
+    kind: RequestKind,
+) anyerror {
+    // Any request-level error means the stream may be partially written or may
+    // have an unread response queued. It must not return to the pool, even when
+    // the operation itself is not retryable (for example timeoutMS expiry).
+    transport_failed.* = true;
+    return switch (kind) {
+        .operation => if (error_response.isRetryableTransportError(err))
+            error.TransientTransactionError
+        else
+            err,
+        .commit => if (error_response.isRetryableTransportError(err))
+            error.UnknownTransactionCommitResult
+        else
+            err,
+        .abort => err,
+    };
 }
 
 fn readConcernDocument(session: *const Session) struct { level: []const u8 } {
@@ -305,4 +330,27 @@ test "transaction response preserves transient error labels" {
     defer std.testing.allocator.free(body);
     const status = try error_response.inspectBody(body);
     try std.testing.expect(status.transient_transaction);
+}
+
+test "request errors mark pinned transaction transport unusable" {
+    var transport_failed = false;
+    try std.testing.expectEqual(
+        error.TransientTransactionError,
+        mapRequestError(&transport_failed, error.SocketTimeout, .operation),
+    );
+    try std.testing.expect(transport_failed);
+
+    transport_failed = false;
+    try std.testing.expectEqual(
+        error.OperationTimeout,
+        mapRequestError(&transport_failed, error.OperationTimeout, .operation),
+    );
+    try std.testing.expect(transport_failed);
+
+    transport_failed = false;
+    try std.testing.expectEqual(
+        error.UnknownTransactionCommitResult,
+        mapRequestError(&transport_failed, error.EndOfStream, .commit),
+    );
+    try std.testing.expect(transport_failed);
 }
