@@ -1,0 +1,15 @@
+app = "bongo-linux-validation"
+primary_region = "iad"
+
+# Fly can deploy a Compose definition directly. This harness intentionally has
+# exactly one buildable service and no public HTTP/TCP service: it is a one-shot
+# Linux validation Machine, not a public application server.
+[build.compose]
+  file = "docker-compose.yml"
+
+[[restart]]
+  policy = "never"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2048mb"
