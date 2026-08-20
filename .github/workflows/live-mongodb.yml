@@ -13,7 +13,7 @@ jobs:
         with:
           version: 0.16.0
       - name: Start TLS MongoDB fixture
-        run: ./scripts/start-tls-db.sh
+        run: bash ./scripts/start-tls-db.sh
       - name: Test verified TLS + SCRAM
         run: zig build tls-integration-test
       - name: Stop TLS fixture
@@ -28,7 +28,7 @@ jobs:
         with:
           version: 0.16.0
       - name: Start replica-set MongoDB fixture
-        run: ./scripts/start-replica-db.sh
+        run: bash ./scripts/start-replica-db.sh
       - name: Test sessions and transactions
         run: zig build runtime-integration-test
       - name: Stop replica-set fixture
