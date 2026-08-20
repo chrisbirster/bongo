@@ -99,3 +99,40 @@ test "42 - runtime client commits and aborts Deez-shaped transactions" {
     _ = try client.deleteOne(database, "reviews", .{ ._id = @as(i64, 43001) });
     _ = try client.deleteOne(database, "cards", .{ ._id = @as(i64, 42001) });
 }
+
+test "42 - runtime client reselects when remembered host is unreachable" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const database = "bongo_failover";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://127.0.0.1:1,localhost:27019/bongo_failover?replicaSet=rs0&connectTimeoutMS=50",
+        .{ .max_pool_size = 2 },
+    );
+    defer client.deinit();
+
+    // connectUri skips the dead first seed and selects localhost:27019. Force
+    // the remembered index back to the dead seed so the next newly-created
+    // connection must recover by probing the configured seed list again.
+    client.selected_host = 0;
+
+    var transaction = try client.beginTransaction(.{});
+    defer transaction.deinit();
+
+    _ = try client.deleteOne(database, "failover", .{ ._id = @as(i64, 42002) });
+    _ = try client.insertOne(database, "failover", .{
+        ._id = @as(i64, 42002),
+        .ok = true,
+    });
+
+    var found = (try client.findOne(
+        database,
+        "failover",
+        .{ ._id = @as(i64, 42002) },
+    )).?;
+    defer found.deinit();
+
+    _ = try client.deleteOne(database, "failover", .{ ._id = @as(i64, 42002) });
+}
