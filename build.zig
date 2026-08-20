@@ -82,6 +82,23 @@ pub fn build(b: *std.Build) void {
     );
     runtime_integration_test_step.dependOn(&run_runtime_integration_tests.step);
 
+    const spec_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/spec.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bongo", .module = mod },
+            },
+        }),
+    });
+    const run_spec_tests = b.addRunArtifact(spec_tests);
+    const spec_test_step = b.step(
+        "spec-test",
+        "Run MongoDB specification harness tests",
+    );
+    spec_test_step.dependOn(&run_spec_tests.step);
+
     // Compile the Deez-facing surface through the build graph rather than
     // invoking `zig test src/deez_readiness.zig` directly. That direct command
     // bypasses this build file and therefore cannot see the patched Zig 0.16
