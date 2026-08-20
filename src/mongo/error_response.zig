@@ -7,9 +7,22 @@ pub const Error = error{
     InvalidErrorResponse,
 };
 
+pub const Label = enum {
+    retryable_write,
+    transient_transaction,
+    unknown_transaction_commit,
+    no_writes_performed,
+};
+
+/// Structured view over a MongoDB command response.
+///
+/// `code_name` and `message` borrow from the inspected response/body bytes and
+/// remain valid only as long as those bytes remain alive.
 pub const Status = struct {
     ok: bool,
     code: ?i32 = null,
+    code_name: ?[]const u8 = null,
+    message: ?[]const u8 = null,
     retryable_write: bool = false,
     transient_transaction: bool = false,
     unknown_transaction_commit: bool = false,
@@ -19,6 +32,15 @@ pub const Status = struct {
         if (self.ok) return false;
         const code = self.code orelse return false;
         return isRetryableReadCode(code);
+    }
+
+    pub fn hasLabel(self: Status, label: Label) bool {
+        return switch (label) {
+            .retryable_write => self.retryable_write,
+            .transient_transaction => self.transient_transaction,
+            .unknown_transaction_commit => self.unknown_transaction_commit,
+            .no_writes_performed => self.no_writes_performed,
+        };
     }
 };
 
@@ -40,6 +62,18 @@ pub fn inspectBody(body: []const u8) !Status {
             .int32 => |number| number,
             .int64 => |number| std.math.cast(i32, number) orelse
                 return error.InvalidErrorResponse,
+            else => return error.InvalidErrorResponse,
+        };
+    }
+    if (try bson.Reader.get(body, "codeName")) |value| {
+        status.code_name = switch (value) {
+            .string => |string| string,
+            else => return error.InvalidErrorResponse,
+        };
+    }
+    if (try bson.Reader.get(body, "errmsg")) |value| {
+        status.message = switch (value) {
+            .string => |string| string,
             else => return error.InvalidErrorResponse,
         };
     }
@@ -117,10 +151,12 @@ fn commandSucceeded(value: bson.Value) bool {
     };
 }
 
-test "error response recognizes MongoDB retry labels" {
+test "error response recognizes MongoDB retry labels and details" {
     const body = try bson.encode(std.testing.allocator, .{
         .ok = @as(i32, 0),
         .code = @as(i32, 10107),
+        .codeName = "NotWritablePrimary",
+        .errmsg = "not primary",
         .errorLabels = [_][]const u8{
             "RetryableWriteError",
             "TransientTransactionError",
@@ -133,11 +169,23 @@ test "error response recognizes MongoDB retry labels" {
     const status = try inspectBody(body);
     try std.testing.expect(!status.ok);
     try std.testing.expectEqual(@as(?i32, 10107), status.code);
-    try std.testing.expect(status.retryable_write);
-    try std.testing.expect(status.transient_transaction);
-    try std.testing.expect(status.unknown_transaction_commit);
-    try std.testing.expect(status.no_writes_performed);
+    try std.testing.expectEqualStrings("NotWritablePrimary", status.code_name.?);
+    try std.testing.expectEqualStrings("not primary", status.message.?);
+    try std.testing.expect(status.hasLabel(.retryable_write));
+    try std.testing.expect(status.hasLabel(.transient_transaction));
+    try std.testing.expect(status.hasLabel(.unknown_transaction_commit));
+    try std.testing.expect(status.hasLabel(.no_writes_performed));
     try std.testing.expect(status.retryableRead());
+}
+
+test "successful response may omit structured error fields" {
+    const body = try bson.encode(std.testing.allocator, .{ .ok = @as(i32, 1) });
+    defer std.testing.allocator.free(body);
+    const status = try inspectBody(body);
+    try std.testing.expect(status.ok);
+    try std.testing.expect(status.code == null);
+    try std.testing.expect(status.code_name == null);
+    try std.testing.expect(status.message == null);
 }
 
 test "operation timeout is not retried after its budget expires" {
