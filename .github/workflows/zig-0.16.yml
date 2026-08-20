@@ -14,4 +14,4 @@ jobs:
           version: 0.16.0
       - run: zig build test
       - name: Compile Deez readiness surface
-        run: zig test src/deez_readiness.zig
+        run: zig build deez-readiness-test
