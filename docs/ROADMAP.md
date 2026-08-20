@@ -1,127 +1,123 @@
 # Bongo Roadmap
 
-Bongo uses `BONGO-NNNN` GitHub issues as implementation milestones. Feature branches are created from `dev` and squash-merged back into `dev`; stable groups of work eventually roll into `main`.
+Bongo uses `BONGO-NNNN` GitHub issues for focused implementation milestones. The issue list is the detailed source of truth; this file is the current high-level map.
 
-The issue list is the detailed source of truth. This document is the human-sized map.
+For the dependency-ordered parity plan after v0.3.0, see [DRIVER_PARITY_PLAN.md](DRIVER_PARITY_PLAN.md).
 
-## Current position
+## Current position — v0.3.0
 
-Bongo has reached **BONGO-0036**. The driver now has an application-facing API for authenticated single-server CRUD, cursors, common query options, aggregation, collection/index/database administration, and a generic `runCommand` escape hatch for commands that do not yet have a high-level Bongo wrapper.
+Bongo v0.3.0 is the first Deez-capable managed-runtime release. In addition to the earlier authenticated CRUD/query/admin API, the final release includes:
 
-Before later roadmap tickets are implemented mechanically, their scope should be compared with the current code. Some tickets were drafted before earlier milestones grew a fuller public `Client`, `Database`, and `Collection` model, so already-satisfied work should be updated or closed rather than duplicated.
+- `mongodb://` parsing and typed connection options;
+- `mongodb+srv://` SRV/TXT discovery;
+- verified server-authenticated TLS;
+- SCRAM-SHA-256 and SCRAM-SHA-1 with authentication negotiation/speculative auth;
+- connect/socket/operation timeout handling;
+- experimental URI-driven `RuntimeClient`;
+- writable-server probing/selection;
+- a bounded reusable transport pool;
+- logical session/transaction-number primitives;
+- pinned replica-set transactions with start/commit/abort;
+- Deez-required transactional `insertOne` + `updateOne`;
+- unit, normal integration, TLS+SCRAM, replica-set transaction, and Linux/Fly-style validation gates.
 
-## Phase map
+The v0.3.0 tag is now a frozen baseline. New work must not be inferred from intermediate v0.3 development branches; only the final tagged tree defines what shipped.
 
-### 1. Wire foundation — implemented
+## Immediate next step — v0.3.x hardening
 
-```text
-BSON
-  ↓
-OP_MSG
-  ↓
-TCP
-  ↓
-hello
-```
-
-This layer establishes BSON encoding/decoding, MongoDB message framing, request/response handling, and direct server communication.
-
-### 2. Authentication — implemented
-
-```text
-TCP connection
-      ↓
-SCRAM-SHA-256
-      ↓
-authenticated connection
-```
-
-SCRAM-SHA-256 works end to end. Full password SASLprep remains incomplete and should be treated as an explicit limitation.
-
-### 3. Driver API and CRUD — implemented
+BONGO-0101 / #176 audits the exact path Deez depends on before Bongo adds more runtime features.
 
 ```text
-Client
-  └── Database
-        └── Collection
-              ├── find / findOne
-              ├── insert
-              ├── update
-              ├── replace
-              ├── delete
-              └── bulkWrite
+Deez
+  -> RuntimeClient
+  -> URI / SRV
+  -> TLS / SCRAM
+  -> writable server
+  -> pool
+  -> session / transaction
+  -> find / insert / update
 ```
 
-This phase includes cursor continuation/cleanup, atomic find-and-modify operations, upserts, counts, and distinct values.
+Patch releases in the v0.3.x line are bug fixes, tests, documentation, and reliability improvements only.
 
-### 4. Querying and command features — implemented
+## Production-runtime sequence
 
-This layer adds projection, sort, skip, limit, advanced find options, read concern, write concern, read-preference modeling, aggregation pipelines, and explain plans.
+After the v0.3.x audit:
 
-Read preference is currently configuration/modeling only. Actual topology-aware server selection comes later.
+1. **Conformance and safety foundations**
+   - #96 official MongoDB specification-test harness
+   - #54 concurrency/thread-safety model
+   - #56 standards-aware handshake/capabilities
+   - #94 structured MongoDB errors/error labels
 
-### 5. Collection, index, and database administration — implemented
+2. **CMAP-grade pooling**
+   - #49-#55 connection pool lifecycle, sizing, wait queue, monitoring, concurrency, shutdown
 
-The current administration surface includes:
+3. **SDAM and server selection**
+   - #57-#63 topology, replica-set discovery, heartbeats, primary/read selection, latency window, failover
+   - #64 sharded/mongos and #65 load-balanced mode follow as deployment extensions
 
-- create, list, rename, and drop collections;
-- create, list, and drop indexes;
-- list databases;
-- drop databases.
+4. **Sessions and reliability**
+   - #66-#69 public/server sessions, cluster/operation time, causal consistency
+   - #70 retryable reads
+   - #71 retryable writes
+   - #74 transaction options/pinning
+   - #75 transaction retry/error-label semantics
+   - #95 cancellation
 
-Cursor-backed collection/index discovery reuses Bongo's `getMore` machinery, while database discovery owns its top-level response buffer explicitly.
+5. **BSON ergonomics**
+   - #77-#86 ObjectId generation, typed decoding, naming, collections, codecs, ownership, Extended JSON, Decimal128, UUID helpers
 
-### 6. Command escape hatch — implemented
+6. **Optional parity features**
+   - #44 end-to-end MONGODB-X509 via `chrisbirster/zig-mtls`
+   - #46 OP_COMPRESSED/compressor negotiation
+   - #76 Stable API
+   - #87-#88 change streams
+   - #89-#91 GridFS
+   - #92-#93 command monitoring/logging
 
-`runCommand` provides an explicit low-level path for database commands that Bongo does not yet wrap. It preserves command-field order, adds the selected database as `$db`, validates the shared command response boundary, and returns owned raw BSON.
+## Completed v0.3 milestones reconciled after release
 
-The escape hatch deliberately does not guess command-specific concerns/options or turn arbitrary cursor responses into Bongo cursors.
+The following original roadmap tickets have been closed because their acceptance boundary shipped in v0.3.0:
 
-### 7. Client configuration and secure connectivity — planned
+- #39 MongoDB URI parsing
+- #40 connection-string option validation
+- #41 SRV/TXT discovery
+- #43 SCRAM-SHA-1
+- #45 auth mechanism negotiation/speculative auth
+- #47 connect/socket timeouts
+- #48 current operation-timeout boundary
+- #72 transaction start
+- #73 transaction commit/abort
 
-The next roadmap group adds the pieces expected from a general-purpose MongoDB connection layer, including:
+Some related broader behavior remains tracked by newer/narrowed open issues; closing the original milestone does not claim full MongoDB-driver parity.
 
-- typed client configuration and connection options;
-- `mongodb://` URI parsing and validation;
-- `mongodb+srv://` discovery;
-- TLS;
-- timeouts.
+## Explicit deferred boundaries
 
-Existing client-object-model tickets should be reconciled with the `Client`, `Database`, and `Collection` API that is already in use before new code is added.
+- Full SDAM/background topology monitoring is not implemented yet.
+- Complete server-selection/read-preference behavior is not implemented yet.
+- Full retryable read/write semantics are not implemented yet.
+- Complete transaction retry/error-label semantics are not implemented yet.
+- Built-in client-certificate mTLS / end-to-end MONGODB-X509 is blocked on the transport boundary; generic work is being separated into `zig-mtls`.
+- OP_COMPRESSED is not enabled in v0.3.0; #46 is a future spec-backed reintroduction, not a hidden shipped feature.
+- Full SASLprep remains incomplete.
+- Typed BSON struct decoding remains future work.
 
-### 8. Pooling, topology, and server selection — planned
+## Quality gates
 
-A production driver cannot remain a single socket. The roadmap therefore adds:
+Every production-runtime milestone must preserve:
 
-- connection pooling and bounded checkout behavior;
-- standards-aware handshake metadata/capability negotiation;
-- SDAM topology tracking;
-- replica-set and sharded deployment support;
-- heartbeat monitoring;
-- latency-aware and read-preference-aware server selection;
-- failover handling.
+```bash
+zig build test
+zig build integration-test
+zig build tls-integration-test
+zig build runtime-integration-test
+```
 
-Until this phase exists, Bongo should be described as a **single-server driver**, not as a replica-set-aware production driver.
-
-### 9. Sessions, transactions, and reliability — planned
-
-Later milestones add logical sessions, retryable behavior, transaction lifecycle, pinning, and related command metadata.
-
-### 10. BSON ergonomics and additional MongoDB features — planned
-
-The roadmap continues with typed BSON decoding, naming controls, ownership refinements, Extended JSON, change streams, GridFS, and other driver capabilities.
-
-### 11. Hardening and release — planned
-
-The final initial-roadmap milestones include:
-
-- #96 — MongoDB specification-test harness;
-- #97 — fuzz and malformed-wire testing;
-- #99 — documentation, examples, and benchmarks;
-- #100 — v0.1.0 release review and tag.
+and the Linux/Fly validation harness. The roadmap additionally moves official MongoDB specification tests, macOS CI, compatibility matrices, concurrency stress tests, failover tests, and fuzz/malformed-wire tests earlier as the relevant features land.
 
 ## Engineering rule
 
-Reaching a later issue number is not the goal by itself. A milestone is useful only when its protocol behavior, ownership, errors, positive tests, negative-space tests, integration behavior, and documentation are coherent.
+Reaching a later issue number is not the goal. A milestone is complete only when its protocol behavior, ownership, errors, positive/negative tests, integration behavior, and documentation form a coherent supported boundary.
 
-See [BONGO_STYLE.md](BONGO_STYLE.md) and [testing.md](testing.md) for the merge discipline used throughout the roadmap.
+See [DRIVER_PARITY_PLAN.md](DRIVER_PARITY_PLAN.md), [BONGO_STYLE.md](BONGO_STYLE.md), and [testing.md](testing.md).
