@@ -16,6 +16,12 @@ stop_mongo() {
   MONGO_PID=""
 }
 
+reset_dbpath() {
+  local path="$1"
+  mkdir -p "$path"
+  find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
 cleanup() {
   stop_mongo
 }
@@ -94,8 +100,9 @@ echo "==> Unit tests"
 zig build test
 
 echo "==> Plain MongoDB integration fixture"
-rm -rf /data/db
-mkdir -p /data/db
+# /data/db is a volume mount in the official MongoDB image. Clear its contents
+# without removing the mountpoint itself.
+reset_dbpath /data/db
 export MONGO_INITDB_ROOT_USERNAME="$MONGO_USER"
 export MONGO_INITDB_ROOT_PASSWORD="$MONGO_PASSWORD"
 /usr/local/bin/docker-entrypoint.sh mongod \
@@ -138,8 +145,7 @@ zig build tls-integration-test
 stop_mongo
 
 echo "==> Replica-set fixture"
-rm -rf /data/rs
-mkdir -p /data/rs
+reset_dbpath /data/rs
 mongod \
   --dbpath /data/rs \
   --bind_ip 127.0.0.1 \
