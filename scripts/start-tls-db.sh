@@ -26,11 +26,14 @@ docker run -d \
   mongo:latest \
   --tlsMode requireTLS \
   --tlsCertificateKeyFile /tls/mongodb.pem \
+  --tlsCAFile /tls/server-cert.pem \
+  --tlsAllowConnectionsWithoutCertificates \
   --bind_ip_all
 
-# Wait for both MongoDB initialization and the root user to be ready. The
-# server intentionally has no client CA configured: this fixture validates the
-# server-authenticated TLS + SCRAM path used by Deez, not mutual TLS/X.509.
+# Current MongoDB requires a CA source whenever TLS is enabled. The fixture
+# supplies the generated certificate as that trust root but explicitly allows
+# clients without certificates. This validates the Deez requirement: verified
+# server TLS followed by SCRAM, not MONGODB-X509/mutual TLS.
 for attempt in $(seq 1 60); do
   if docker exec mongodb-tls mongosh \
       --quiet \
