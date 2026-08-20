@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const bongo = @import("bongo");
 
 fn expectInt(document: []const u8, field: []const u8, expected: i64) !void {
@@ -208,4 +209,81 @@ test "42 - RuntimeClient checked deinit rejects active child handles" {
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42005) });
     try client.deinitChecked();
     cleaned = true;
+}
+
+test "42 - shared RuntimeClient supports concurrent operations" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const database = "bongo_concurrency";
+    const collection = "cards";
+    const worker_count = 4;
+    const iterations = 16;
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27019/bongo_concurrency?replicaSet=rs0",
+        .{ .max_pool_size = 8 },
+    );
+    defer client.deinit();
+
+    for (0..worker_count) |worker_id| {
+        for (0..iterations) |iteration| {
+            const id: i64 = @intCast(50000 + worker_id * 1000 + iteration);
+            _ = try client.deleteOne(database, collection, .{ ._id = id });
+        }
+    }
+
+    const Runner = struct {
+        client: *bongo.RuntimeClient,
+        worker_id: usize,
+        iterations: usize,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            for (0..self.iterations) |iteration| {
+                const id: i64 = @intCast(50000 + self.worker_id * 1000 + iteration);
+                _ = self.client.insertOne(
+                    "bongo_concurrency",
+                    "cards",
+                    .{
+                        ._id = id,
+                        .worker = @as(i64, @intCast(self.worker_id)),
+                        .iteration = @as(i64, @intCast(iteration)),
+                    },
+                ) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+            }
+        }
+    };
+
+    var runners: [worker_count]Runner = undefined;
+    var threads: [worker_count]std.Thread = undefined;
+    for (&runners, 0..) |*runner, worker_id| {
+        runner.* = .{
+            .client = &client,
+            .worker_id = worker_id,
+            .iterations = iterations,
+        };
+    }
+    for (&threads, &runners) |*thread, *runner| {
+        thread.* = try std.Thread.spawn(.{}, Runner.run, .{runner});
+    }
+    for (threads) |thread| thread.join();
+    for (runners) |runner| {
+        if (runner.failure) |err| return err;
+    }
+
+    for (0..worker_count) |worker_id| {
+        for (0..iterations) |iteration| {
+            const id: i64 = @intCast(50000 + worker_id * 1000 + iteration);
+            var found = (try client.findOne(database, collection, .{ ._id = id })).?;
+            found.deinit();
+            _ = try client.deleteOne(database, collection, .{ ._id = id });
+        }
+    }
 }
