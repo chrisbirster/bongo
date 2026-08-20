@@ -1,4 +1,5 @@
 const std = @import("std");
+const TlsClient = @import("bongo_zig_tls_client");
 const connect_timeout = @import("connect_timeout.zig");
 const operation_timeout = @import("operation_timeout.zig");
 const uri_options = @import("uri_options.zig");
@@ -8,7 +9,7 @@ const Allocator = std.mem.Allocator;
 const net = Io.net;
 
 const default_max_message_size = 48 * 1024 * 1024;
-const tls_buffer_size = std.crypto.tls.Client.min_buffer_len;
+const tls_buffer_size = TlsClient.min_buffer_len;
 const tls_entropy_size = 240;
 
 const TimedTaskResult = union(enum) {
@@ -64,19 +65,20 @@ pub const Options = struct {
     }
 };
 
-/// Heap-owned TLS MongoDB transport backed by Zig 0.16's
-/// `std.crypto.tls.Client`.
+/// Heap-owned TLS MongoDB transport backed by Bongo's compatibility copy of
+/// Zig 0.16's `std.crypto.tls.Client`.
 ///
-/// `std.crypto.tls.Client` stores pointers to the socket reader/writer and CA
-/// context supplied during initialization, so this object must remain
-/// pointer-stable for its entire lifetime.
+/// The compatibility copy is generated from the active compiler's own stdlib
+/// during `zig build` and only adds protocol-correct empty client-certificate
+/// responses. It stores pointers to the socket reader/writer and CA context,
+/// so this object must remain pointer-stable for its entire lifetime.
 pub const TlsConnection = struct {
     allocator: Allocator,
     io: Io,
     stream: net.Stream,
     stream_reader: net.Stream.Reader,
     stream_writer: net.Stream.Writer,
-    tls_client: std.crypto.tls.Client,
+    tls_client: TlsClient,
     ca_bundle: std.crypto.Certificate.Bundle,
     ca_lock: Io.RwLock,
     socket_timeout_ms: ?u32,
@@ -97,8 +99,9 @@ pub const TlsConnection = struct {
         if (options.certificate_key_file != null or
             options.certificate_key_file_password != null)
         {
-            // Zig 0.16 std.crypto.tls.Client cannot present a client
-            // certificate/private key. See docs/zig-0.16-tls-gap.md.
+            // The compatibility backport can answer a CertificateRequest with
+            // an empty Certificate message, but it still cannot sign/present an
+            // actual client certificate/private key. See the compatibility doc.
             return error.ClientCertificateUnsupported;
         }
 
@@ -179,7 +182,7 @@ pub const TlsConnection = struct {
         var entropy: [tls_entropy_size]u8 = undefined;
         io.random(&entropy);
 
-        self.tls_client = try std.crypto.tls.Client.init(
+        self.tls_client = try TlsClient.init(
             &self.stream_reader.interface,
             &self.stream_writer.interface,
             .{
