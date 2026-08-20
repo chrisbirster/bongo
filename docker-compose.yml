@@ -8,9 +8,6 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: secretpassword
-    # These ports are not required by the tests because MongoDB and Bongo run
-    # inside the same Linux container. They are exposed only for local debugging.
-    ports:
-      - "27017:27017"
-      - "27018:27018"
-      - "27019:27019"
+    # No host ports are published. MongoDB and all Bongo tests run inside this
+    # same Linux container, so binding 27017/27018/27019 on the host is both
+    # unnecessary and can conflict with an existing local MongoDB instance.
