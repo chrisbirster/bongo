@@ -396,21 +396,25 @@ pub const RuntimeClient = struct {
     }
 
     fn openSelectedTransport(self: *RuntimeClient) !Transport {
-        var transport = try self.openTransport(self.selected_host);
-        errdefer transport.deinit();
+        var transport: ?Transport = try self.openTransport(self.selected_host);
+        errdefer if (transport) |*owned| owned.deinit();
+
         const description = try topology.hello(
-            &transport,
+            &transport.?,
             self.allocator,
             self.takeRequestId(),
         );
         if (!description.usableForWrites() and
             self.connection_options.load_balanced != true)
         {
-            transport.deinit();
+            var stale = transport.?;
+            transport = null;
+            stale.deinit();
             return self.openWritableTransport();
         }
-        try self.authenticate(&transport);
-        return transport;
+
+        try self.authenticate(&transport.?);
+        return transport.?;
     }
 
     fn openTransport(self: *RuntimeClient, host_index: usize) !Transport {
