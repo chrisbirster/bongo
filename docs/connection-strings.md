@@ -53,8 +53,8 @@ Normalization currently provides the typed settings needed by the rest of the v0
 - authentication mechanism and authentication-source validation;
 - boolean topology/TLS options;
 - connection, socket, and client-side operation timeout values;
-- compressor lists;
-- TLS certificate/CA settings;
+- compressor lists for forward-compatible configuration parsing;
+- TLS certificate/CA settings for forward-compatible configuration parsing;
 - SRV-specific option fields for the DNS discovery layer.
 
 Recognized scalar options are intentionally strict: conflicting or repeated settings return deterministic errors instead of leaving precedence undefined. `tls` and its legacy alias `ssl` are the exception required by the MongoDB URI rules: repeated instances are accepted when all values agree and rejected when they conflict.
@@ -67,4 +67,4 @@ Unknown URI options are ignored for forward compatibility. Bongo does not yet ha
 
 Structural parsing deliberately preserves percent-encoded text and raw option values. For example, `%40` remains `%40` instead of becoming `@`, and `retryWrites=true` remains a raw option pair rather than immediately becoming a boolean. Normalization is the layer that decodes and validates those values.
 
-`mongodb+srv://` discovery, TLS transport setup, authentication negotiation, compression, and timeout enforcement remain separate connection-layer stages so each can be tested independently.
+`mongodb+srv://` discovery, authentication negotiation, and timeout enforcement remain separate connection-layer stages so each can be tested independently. Runtime TLS and wire compression are deferred beyond v0.3; their URI preferences are parsed now so later transport support does not require changing the connection-string API.

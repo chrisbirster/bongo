@@ -1,42 +1,17 @@
-# TLS connections
+# TLS configuration
 
-Bongo provides a TLS MongoDB transport backed by Zig's `std.crypto.tls.Client`.
+Bongo v0.3 parses and validates MongoDB TLS connection-string options, but it does **not** ship a built-in TLS transport.
 
-```zig
-var options = try bongo.parseConnectionOptions(
-    allocator,
-    "mongodb://db.example:27017/?tls=true",
-);
-defer options.deinit();
+The URI/configuration layer recognizes settings such as `tls`, `ssl`, `tlsCAFile`, `tlsCertificateKeyFile`, `tlsCertificateKeyFilePassword`, `tlsInsecure`, `tlsAllowInvalidCertificates`, and `tlsAllowInvalidHostnames`. Keeping these fields in the normalized connection options preserves the MongoDB connection-string model and avoids an API change when runtime TLS support is added.
 
-const tls_options = try bongo.TlsOptions.fromConnectionOptions(options);
-var connection = try bongo.TlsConnection.connect(
-    io,
-    allocator,
-    options.hosts[0].name,
-    options.hosts[0].port,
-    tls_options,
-);
-defer connection.deinit();
-```
+## Runtime transport status
 
-By default Bongo verifies both the server certificate chain and the requested host name. When no `tlsCAFile` is configured, the TLS transport loads the operating system trust roots. A custom CA file may be supplied with `tlsCAFile`; the current Zig 0.16 certificate API requires that path to be absolute.
+Runtime TLS remains tracked by BONGO-0042.
 
-The MongoDB URI verification controls map as follows:
+Release validation against a TLS-enabled `mongod` exposed a limitation in Zig 0.16's `std.crypto.tls.Client` handshake path. MongoDB configures its server TLS context to request a peer/client certificate when a CA is configured. Zig 0.16's standard TLS client does not provide the client-certificate handshake support Bongo needs for that MongoDB exchange, and the handshake returns `TlsUnexpectedMessage` before any MongoDB wire message is sent.
 
-- `tlsInsecure=true` disables both certificate and host-name verification.
-- `tlsAllowInvalidCertificates=true` disables certificate-chain verification.
-- `tlsAllowInvalidHostnames=true` disables host-name verification while keeping certificate-chain validation enabled.
+Because the transport cannot currently complete a real MongoDB TLS handshake reliably, v0.3 does not expose `TlsConnection` or claim runtime TLS support. Bongo will add TLS transport support when it can be validated end-to-end against MongoDB rather than shipping a partially working abstraction.
 
-Bongo never silently ignores client-certificate options. Zig 0.16's standard TLS client does not expose a client-certificate hook, so `TlsConnection.connect` returns `ClientCertificateUnsupported` when a client certificate/key is supplied. MONGODB-X509 therefore has a separate explicit transport boundary rather than pretending mutual TLS was established.
+## X.509
 
-## Local integration fixture
-
-A TLS-enabled MongoDB fixture can be started with:
-
-```bash
-./scripts/start-tls-db.sh
-BONGO_TLS_INTEGRATION=1 zig build integration-test
-```
-
-The fixture uses a short-lived self-signed certificate and listens on `localhost:27018`. The integration test deliberately disables verification for that generated certificate; normal deployments should leave both verification controls enabled or provide a trusted `tlsCAFile`.
+MONGODB-X509 command/configuration support remains available separately. The authentication command is generic over a request-capable secure transport, but end-to-end X.509 still requires a TLS implementation that can present a client certificate.

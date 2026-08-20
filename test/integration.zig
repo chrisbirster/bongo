@@ -37,5 +37,6 @@ test {
     _ = @import("integration/36_list_databases.zig");
     _ = @import("integration/37_drop_database.zig");
     _ = @import("integration/38_run_command.zig");
-    _ = @import("integration/41_tls.zig");
+    _ = @import("integration/39_scram_sha1.zig");
+    _ = @import("integration/40_auth_handshake.zig");
 }

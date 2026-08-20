@@ -285,7 +285,7 @@ fn parseSrvResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
         const data_off: usize = answer.data_off;
         const data_end = data_off + @as(usize, answer.data_len);
         if (data_end > packet.len) return error.InvalidDnsResponse;
-        const port = std.mem.readInt(u16, packet[data_off + 4 .. data_off + 6], .big);
+        const port = readU16Big(packet, data_off + 4);
         if (port == 0) return error.InvalidSrvPort;
         var name_buffer: [net.HostName.max_len]u8 = undefined;
         const expanded = net.HostName.expand(packet, data_off + 6, &name_buffer) catch return error.InvalidDnsResponse;
@@ -323,7 +323,8 @@ fn parseTxtResponse(allocator: Allocator, packet: []const u8) (Allocator.Error |
         return null;
     }
     try validateTxtOptions(txt.items);
-    return txt.toOwnedSlice(allocator);
+    const owned = try txt.toOwnedSlice(allocator);
+    return owned;
 }
 
 fn validateTxtOptions(txt: []const u8) Error!void {
@@ -412,10 +413,17 @@ fn shuffle(io: Io, records: []SrvRecord) void {
     }
 }
 
+fn readU16Big(bytes: []const u8, offset: usize) u16 {
+    const pair: *const [2]u8 = @ptrCast(bytes.ptr + offset);
+    return std.mem.readInt(u16, pair, .big);
+}
+
 fn labelCount(host: []const u8) usize {
     if (host.len == 0) return 0;
     var count: usize = 1;
-    for (host) |byte| if (byte == '.') count += 1;
+    for (host) |byte| {
+        if (byte == '.') count += 1;
+    }
     return count;
 }
 
@@ -463,7 +471,8 @@ test "SRV parent-domain validation" {
     try std.testing.expect(!validTarget("server.mongodb.com", "db1.evil.com"));
     try std.testing.expect(validTarget("mongodb.local", "db.mongodb.local"));
     try std.testing.expect(!validTarget("mongodb.local", "mongodb.local"));
-    try std.testing.expect(validTarget("a.b.example.com", "example.com"));
+    try std.testing.expect(validTarget("a.b.example.com", "db.b.example.com"));
+    try std.testing.expect(!validTarget("a.b.example.com", "example.com"));
 }
 
 test "SRV URI rejects multiple hosts and ports before DNS" {
@@ -491,7 +500,7 @@ test "TXT records accept only SRV defaults" {
 test "DNS query encodes SRV qname and type" {
     const packet = try encodeDnsQuery(std.testing.allocator, 0x1234, "_mongodb._tcp.example.com", dns_type_srv);
     defer std.testing.allocator.free(packet);
-    try std.testing.expectEqual(@as(u16, 0x1234), std.mem.readInt(u16, packet[0..2], .big));
-    try std.testing.expectEqual(@as(u16, dns_type_srv), std.mem.readInt(u16, packet[packet.len - 4 .. packet.len - 2], .big));
-    try std.testing.expectEqual(@as(u16, dns_class_in), std.mem.readInt(u16, packet[packet.len - 2 ..], .big));
+    try std.testing.expectEqual(@as(u16, 0x1234), readU16Big(packet, 0));
+    try std.testing.expectEqual(@as(u16, dns_type_srv), readU16Big(packet, packet.len - 4));
+    try std.testing.expectEqual(@as(u16, dns_class_in), readU16Big(packet, packet.len - 2));
 }

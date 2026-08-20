@@ -1,15 +1,19 @@
 const std = @import("std");
-const compression = @import("compression.zig");
+const connect_timeout = @import("connect_timeout.zig");
 const operation_timeout = @import("operation_timeout.zig");
 
 const Io = std.Io;
 const net = Io.net;
 const Allocator = std.mem.Allocator;
 
+const TimedTaskResult = union(enum) {
+    operation: anyerror!void,
+    timer: anyerror!void,
+};
+
 pub const Connection = struct {
     io: Io,
     stream: net.Stream,
-    compressor: ?compression.Compressor = null,
     socket_timeout_ms: ?u32 = null,
     operation_timeout_ms: ?u64 = null,
 
@@ -41,13 +45,13 @@ pub const Connection = struct {
         port: u16,
         options: Options,
     ) !Connection {
-        const host_name = try net.HostName.init(host);
-        const stream = host_name.connect(io, port, .{
-            .mode = .stream,
-            .protocol = .tcp,
-            .timeout = timeoutFromMs(options.connect_timeout_ms),
-        }) catch |err| switch (err) {
-            error.Timeout => return error.ConnectTimeout,
+        const stream = connect_timeout.connect(
+            io,
+            host,
+            port,
+            options.connect_timeout_ms,
+        ) catch |err| switch (err) {
+            error.ConnectTimeout => return error.ConnectTimeout,
             else => |e| return e,
         };
         return .{
@@ -63,12 +67,8 @@ pub const Connection = struct {
         self.* = undefined;
     }
 
-    pub fn setCompressor(self: *Connection, compressor: ?compression.Compressor) void {
-        self.compressor = compressor;
-    }
-
     /// Execute one command request with this connection's configured timeoutMS.
-    /// The deadline starts before compression and is shared by send + receive.
+    /// The deadline starts before send and is shared by send + receive.
     pub fn request(
         self: *Connection,
         allocator: Allocator,
@@ -91,18 +91,7 @@ pub const Connection = struct {
         timeout_ms: ?u64,
     ) ![]u8 {
         const budget = try operation_timeout.Budget.start(self.io, timeout_ms);
-
-        if (self.compressor) |compressor| {
-            const compressed = try compression.compressMessage(
-                allocator,
-                request_bytes,
-                compressor,
-            );
-            defer allocator.free(compressed);
-            try self.sendWithin(compressed, budget);
-        } else {
-            try self.sendWithin(request_bytes, budget);
-        }
+        try self.sendWithin(request_bytes, budget);
         return self.receiveWithin(
             allocator,
             default_max_message_size,
@@ -135,19 +124,17 @@ pub const Connection = struct {
             else => |e| return e,
         } orelse return self.sendRaw(bytes);
 
-        var operation = self.io.async(sendRaw, .{ self, bytes });
-        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try Io.select(self.io, .{
-            .operation = &operation,
-            .timer = &timer,
-        })) {
-            .operation => |result| {
-                _ = timer.cancel(self.io) catch {};
-                return result;
-            },
+        var result_buffer: [2]TimedTaskResult = undefined;
+        var select: Io.Select(TimedTaskResult) = .init(self.io, &result_buffer);
+        defer select.cancelDiscard();
+
+        try select.concurrent(.operation, sendTask, .{ self, bytes });
+        try select.concurrent(.timer, waitUntilTask, .{ self.io, limit.deadline });
+
+        switch (try select.await()) {
+            .operation => |result| return result,
             .timer => |result| {
                 try result;
-                _ = operation.cancel(self.io) catch {};
                 return switch (limit.source) {
                     .operation => error.OperationTimeout,
                     .socket => error.SocketTimeout,
@@ -167,28 +154,53 @@ pub const Connection = struct {
             else => |e| return e,
         } orelse return self.receiveRaw(allocator, max_message_size);
 
-        var operation = self.io.async(receiveRaw, .{ self, allocator, max_message_size });
-        var timer = self.io.async(waitUntil, .{ self.io, limit.deadline });
-        switch (try Io.select(self.io, .{
-            .operation = &operation,
-            .timer = &timer,
-        })) {
+        var response: ?[]u8 = null;
+        var result_buffer: [2]TimedTaskResult = undefined;
+        var select: Io.Select(TimedTaskResult) = .init(self.io, &result_buffer);
+        defer {
+            select.cancelDiscard();
+            if (response) |bytes| allocator.free(bytes);
+        }
+
+        try select.concurrent(
+            .operation,
+            receiveTask,
+            .{ self, allocator, max_message_size, &response },
+        );
+        try select.concurrent(.timer, waitUntilTask, .{ self.io, limit.deadline });
+
+        switch (try select.await()) {
             .operation => |result| {
-                _ = timer.cancel(self.io) catch {};
-                return result;
+                try result;
+                const bytes = response orelse unreachable;
+                response = null;
+                return bytes;
             },
             .timer => |result| {
                 try result;
-                const canceled = operation.cancel(self.io);
-                if (canceled) |late_response| {
-                    allocator.free(late_response);
-                } else |_| {}
                 return switch (limit.source) {
                     .operation => error.OperationTimeout,
                     .socket => error.SocketTimeout,
                 };
             },
         }
+    }
+
+    fn sendTask(self: *Connection, bytes: []const u8) anyerror!void {
+        try self.sendRaw(bytes);
+    }
+
+    fn receiveTask(
+        self: *Connection,
+        allocator: Allocator,
+        max_message_size: usize,
+        response: *?[]u8,
+    ) anyerror!void {
+        response.* = try self.receiveRaw(allocator, max_message_size);
+    }
+
+    fn waitUntilTask(io: Io, deadline: Io.Clock.Timestamp) anyerror!void {
+        try waitUntil(io, deadline);
     }
 
     fn sendRaw(self: *Connection, bytes: []const u8) !void {
@@ -217,37 +229,10 @@ pub const Connection = struct {
         errdefer allocator.free(message);
         @memcpy(message[0..4], &length_bytes);
         try stream_reader.interface.readSliceAll(message[4..]);
-
-        if (!compression.isCompressed(message)) return message;
-        const decompressed = try compression.decompressMessage(
-            allocator,
-            message,
-            max_message_size,
-        );
-        allocator.free(message);
-        return decompressed;
+        return message;
     }
 
     fn waitUntil(io: Io, deadline: Io.Clock.Timestamp) !void {
         try deadline.wait(io);
     }
-
-    fn timeoutFromMs(value: ?u32) Io.Timeout {
-        const milliseconds = activeTimeout(value) orelse return .none;
-        return .{ .duration = .{
-            .raw = Io.Duration.fromMilliseconds(milliseconds),
-            .clock = .awake,
-        } };
-    }
-
-    fn activeTimeout(value: ?u32) ?u32 {
-        const milliseconds = value orelse return null;
-        return if (milliseconds == 0) null else milliseconds;
-    }
 };
-
-test "network timeout option maps zero to unlimited" {
-    try std.testing.expect(Connection.activeTimeout(null) == null);
-    try std.testing.expect(Connection.activeTimeout(0) == null);
-    try std.testing.expectEqual(@as(u32, 5000), Connection.activeTimeout(5000).?);
-}

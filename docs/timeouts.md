@@ -20,9 +20,9 @@ defer connection.deinit();
 
 `connect_timeout_ms` bounds DNS/TCP connection establishment through Zig's native `Io.Timeout` support. Bongo uses `HostName.connect`, so normal DNS hostnames, including SRV-discovered hosts, are accepted in addition to numeric IP addresses. A connect deadline is reported as `error.ConnectTimeout`.
 
-`socket_timeout_ms` bounds an individual send or receive step. Bongo races cancelable Zig I/O against the monotonic `awake` clock and cancels the losing future. A stalled write or read is reported as `error.SocketTimeout`.
+`socket_timeout_ms` bounds an individual send or receive step. Bongo races the network task against the monotonic `awake` deadline through Zig's task-level `Io.Select` API and cancels the remaining task after one result is selected. A stalled write or read is reported as `error.SocketTimeout`.
 
-`operation_timeout_ms` implements the transport-level behavior for MongoDB `timeoutMS`. Bongo creates one monotonic absolute deadline before request compression starts and carries that same deadline through the send and receive. The receive therefore gets only the time remaining after the send; the timeout is not reset for each nested step. An exhausted operation budget is reported as `error.OperationTimeout`.
+`operation_timeout_ms` implements the transport-level behavior for MongoDB `timeoutMS`. Bongo creates one monotonic absolute deadline before the request is sent and carries that same deadline through the send and receive. The receive therefore gets only the time remaining after the send; the timeout is not reset for each nested step. An exhausted operation budget is reported as `error.OperationTimeout`.
 
 When both operation and socket limits are configured, the earlier deadline wins. A short `socketTimeoutMS` can fail one network step before the overall operation budget, but it can never extend `timeoutMS`.
 
@@ -39,4 +39,4 @@ const response = try connection.requestWithTimeoutMs(
 defer allocator.free(response);
 ```
 
-Bongo v0.3 still has one connection per `Client` and no topology/server-selection loop. At this milestone, a complete operation budget spans one full `Connection.request` including compression, send, and receive. The exported `OperationTimeoutBudget` is intentionally reusable so later pooling, server selection, retries, and cursor work can propagate the same remaining deadline instead of creating new timeout windows.
+Bongo v0.3 still has one connection per `Client` and no topology/server-selection loop. At this milestone, a complete operation budget spans one full `Connection.request`, including send and receive. The exported `OperationTimeoutBudget` is intentionally reusable so later pooling, server selection, retries, and cursor work can propagate the same remaining deadline instead of creating new timeout windows.
