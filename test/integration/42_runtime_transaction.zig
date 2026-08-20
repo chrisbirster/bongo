@@ -136,3 +136,46 @@ test "42 - runtime client reselects when remembered host is unreachable" {
 
     _ = try client.deleteOne(database, "failover", .{ ._id = @as(i64, 42002) });
 }
+
+test "42 - exhausted cursor releases its transport before deinit" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const database = "bongo_cursor_release";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27019/bongo_cursor_release?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    defer client.deinit();
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42003) });
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42004) });
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 42003),
+        .value = @as(i32, 1),
+    });
+
+    var cursor = try client.find(
+        database,
+        collection,
+        .{ ._id = @as(i64, 42003) },
+        .{ .limit = @as(i64, 1) },
+    );
+    defer cursor.deinit();
+
+    try std.testing.expect((try cursor.next()) != null);
+
+    // The cursor object and its firstBatch bytes are deliberately still alive.
+    // Since the server cursor is exhausted, the only pool connection must have
+    // been released already for this operation to succeed.
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 42004),
+        .value = @as(i32, 2),
+    });
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42003) });
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 42004) });
+}
