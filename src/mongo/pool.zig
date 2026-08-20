@@ -6,21 +6,37 @@ const Allocator = std.mem.Allocator;
 
 pub const Error = error{
     PoolExhausted,
+    PoolClosed,
     InvalidMaxSize,
 };
 
-/// Small bounded reusable transport pool.
+pub const State = enum {
+    ready,
+    closing,
+    closed,
+};
+
+pub const Stats = struct {
+    state: State,
+    max_size: usize,
+    total: usize,
+    idle: usize,
+    checked_out: usize,
+};
+
+/// Bounded reusable transport pool with explicit lifecycle and accounting.
 ///
-/// All accounting and idle-list mutations are synchronized so multiple
-/// RuntimeClient operations can safely check transports in and out from
-/// different threads. Connection creation still happens outside the mutex;
-/// `noteCreated` is the final capacity reservation and can reject a racing
-/// creator, which must then close its just-created transport.
+/// `created` is the total number of live transports owned by the pool,
+/// including checked-out transports. `checked_out` records transports currently
+/// owned by RuntimeClient operations/cursors/transactions. All state transitions
+/// and idle-list mutations are synchronized.
 pub const Pool = struct {
     allocator: Allocator,
     max_size: usize,
     mutex: std.Thread.Mutex = .{},
+    state: State = .ready,
     created: usize = 0,
+    checked_out: usize = 0,
     idle: std.ArrayList(Transport) = .empty,
 
     pub fn init(allocator: Allocator, max_size: usize) Error!Pool {
@@ -30,7 +46,12 @@ pub const Pool = struct {
 
     pub fn deinit(self: *Pool) void {
         self.mutex.lock();
+        std.debug.assert(self.checked_out == 0);
+        self.state = .closing;
         for (self.idle.items) |*transport| transport.deinit();
+        self.idle.clearRetainingCapacity();
+        self.created = 0;
+        self.state = .closed;
         self.idle.deinit(self.allocator);
         self.mutex.unlock();
         self.* = undefined;
@@ -39,27 +60,37 @@ pub const Pool = struct {
     pub fn take(self: *Pool) ?Transport {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.idle.items.len == 0) return null;
+        if (self.state != .ready or self.idle.items.len == 0) return null;
+        self.checked_out += 1;
         return self.idle.pop().?;
     }
 
     pub fn canCreate(self: *Pool) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.created < self.max_size;
+        return self.state == .ready and self.created < self.max_size;
     }
 
+    /// Account for a newly-created transport that is immediately checked out.
     pub fn noteCreated(self: *Pool) Error!void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (self.state != .ready) return error.PoolClosed;
         if (self.created >= self.max_size) return error.PoolExhausted;
         self.created += 1;
+        self.checked_out += 1;
     }
 
+    /// Return a healthy checked-out transport to the idle pool.
     pub fn put(self: *Pool, transport: Transport) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (self.state != .ready) return error.PoolClosed;
+        std.debug.assert(self.checked_out > 0);
+        // Append first. If allocation fails, ownership remains checked out and
+        // the caller can discard the transport without corrupting counters.
         try self.idle.append(self.allocator, transport);
+        self.checked_out -= 1;
     }
 
     /// Permanently discard a checked-out connection after a transport-level
@@ -68,30 +99,56 @@ pub const Pool = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         std.debug.assert(self.created > 0);
+        std.debug.assert(self.checked_out > 0);
         self.created -= 1;
+        self.checked_out -= 1;
+    }
+
+    pub fn stats(self: *Pool) Stats {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return .{
+            .state = self.state,
+            .max_size = self.max_size,
+            .total = self.created,
+            .idle = self.idle.items.len,
+            .checked_out = self.checked_out,
+        };
     }
 
     pub fn idleCount(self: *Pool) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.idle.items.len;
+        return self.stats().idle;
     }
 
     pub fn createdCount(self: *Pool) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.created;
+        return self.stats().total;
+    }
+
+    pub fn checkedOutCount(self: *Pool) usize {
+        return self.stats().checked_out;
     }
 };
 
-test "bounded pool accounts for checkout and discard" {
+test "bounded pool accounts for checked-out lifecycle" {
     var pool = try Pool.init(std.testing.allocator, 2);
     defer pool.deinit();
+
     try pool.noteCreated();
     try pool.noteCreated();
+    var snapshot = pool.stats();
+    try std.testing.expectEqual(State.ready, snapshot.state);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.checked_out);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
     try std.testing.expect(!pool.canCreate());
+
     pool.noteDiscarded();
+    snapshot = pool.stats();
+    try std.testing.expectEqual(@as(usize, 1), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
     try std.testing.expect(pool.canCreate());
+
+    pool.noteDiscarded();
 }
 
 test "pool accounting remains consistent under contention" {
@@ -125,6 +182,8 @@ test "pool accounting remains consistent under contention" {
     }
     for (threads) |thread| thread.join();
 
-    try std.testing.expectEqual(@as(usize, 0), pool.createdCount());
-    try std.testing.expectEqual(@as(usize, 0), pool.idleCount());
+    const snapshot = pool.stats();
+    try std.testing.expectEqual(@as(usize, 0), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.checked_out);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
 }
