@@ -1,0 +1,42 @@
+name: Vendor Zig 0.16 TLS client
+
+on:
+  push:
+    paths:
+      - tools/vendor_zig_0_16_tls_client.py
+      - .github/workflows/vendor-zig-tls.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Fetch verified Zig 0.16.0 source
+        run: |
+          curl --fail --location --output /tmp/zig-0.16.0.tar.xz \
+            https://ziglang.org/download/0.16.0/zig-0.16.0.tar.xz
+          echo '43186959edc87d5c7a1be7b7d2a25efffd22ce5807c7af99067f86f99641bfdf  /tmp/zig-0.16.0.tar.xz' | sha256sum --check
+          tar -xJf /tmp/zig-0.16.0.tar.xz -C /tmp \
+            zig-0.16.0/lib/std/crypto/tls/Client.zig
+      - name: Generate Bongo compatibility client
+        run: |
+          python3 tools/vendor_zig_0_16_tls_client.py \
+            /tmp/zig-0.16.0/lib/std/crypto/tls/Client.zig \
+            src/vendor/zig_0_16_tls_client.zig
+          zig fmt src/vendor/zig_0_16_tls_client.zig
+      - name: Commit generated source
+        run: |
+          if git diff --quiet -- src/vendor/zig_0_16_tls_client.zig && git ls-files --error-unmatch src/vendor/zig_0_16_tls_client.zig >/dev/null 2>&1; then
+            echo 'Vendored client already current.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/vendor/zig_0_16_tls_client.zig
+          git commit -m 'Vendor patched Zig 0.16 TLS client'
+          git push origin HEAD:${{ github.ref_name }}
