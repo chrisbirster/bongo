@@ -27,6 +27,7 @@ pub const Error = error{
     UnsupportedAuthMechanism,
     SessionsUnsupported,
     TransactionsUnsupported,
+    ActiveHandles,
     EmptyDatabase,
     EmptyCollection,
     InvalidCursorResponse,
@@ -62,6 +63,7 @@ pub const RuntimeClient = struct {
     next_request_id: i32 = 1,
     supports_sessions: bool = false,
     supports_transactions: bool = false,
+    active_handles: usize = 0,
 
     pub fn connectUri(
         io: Io,
@@ -93,6 +95,13 @@ pub const RuntimeClient = struct {
     }
 
     pub fn deinit(self: *RuntimeClient) void {
+        self.deinitChecked() catch @panic(
+            "RuntimeClient.deinit called while Cursor or Transaction handles are still active",
+        );
+    }
+
+    pub fn deinitChecked(self: *RuntimeClient) Error!void {
+        if (self.active_handles != 0) return error.ActiveHandles;
         self.pool.deinit();
         self.connection_options.deinit();
         self.* = undefined;
@@ -306,6 +315,7 @@ pub const RuntimeClient = struct {
         try transaction_ops.begin(&session, options);
         const owned_transport = transport.?;
         transport = null;
+        self.retainHandle();
         return .{
             .client = self,
             .transport = owned_transport,
@@ -347,6 +357,15 @@ pub const RuntimeClient = struct {
         const owned = transport.* orelse return;
         transport.* = null;
         self.discard(owned);
+    }
+
+    fn retainHandle(self: *RuntimeClient) void {
+        self.active_handles += 1;
+    }
+
+    fn releaseHandle(self: *RuntimeClient) void {
+        std.debug.assert(self.active_handles > 0);
+        self.active_handles -= 1;
     }
 
     /// A request error can leave a stream partially written or with an unread
@@ -522,6 +541,7 @@ pub const Cursor = struct {
         if (cursor.cursor_id == 0) {
             client.releaseTransport(&cursor.transport);
         }
+        client.retainHandle();
         return cursor;
     }
 
@@ -569,6 +589,7 @@ pub const Cursor = struct {
         self.client.allocator.free(self.database_name);
         self.client.allocator.free(self.collection_name);
         self.client.releaseTransport(&self.transport);
+        self.client.releaseHandle();
         self.* = undefined;
     }
 
@@ -709,6 +730,7 @@ pub const Transaction = struct {
     pub fn deinit(self: *Transaction) void {
         if (!self.finished and self.transport != null) self.abort() catch {};
         if (self.transport != null) self.release();
+        self.client.releaseHandle();
         self.* = undefined;
     }
 
