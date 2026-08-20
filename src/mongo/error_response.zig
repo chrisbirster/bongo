@@ -90,6 +90,24 @@ pub fn isRetryableReadCode(code: i32) bool {
     };
 }
 
+/// Errors from an established socket/TLS stream for which a fresh server
+/// selection and one retry is useful. An operation timeout is deliberately not
+/// retryable here because its client-side budget has already expired.
+pub fn isRetryableTransportError(err: anyerror) bool {
+    return switch (err) {
+        error.SocketTimeout,
+        error.EndOfStream,
+        error.ConnectionResetByPeer,
+        error.BrokenPipe,
+        error.ConnectionTimedOut,
+        error.NetworkUnreachable,
+        error.HostUnreachable,
+        error.ConnectionRefused,
+        => true,
+        else => false,
+    };
+}
+
 fn commandSucceeded(value: bson.Value) bool {
     return switch (value) {
         .double => |number| number == 1.0,
@@ -120,4 +138,9 @@ test "error response recognizes MongoDB retry labels" {
     try std.testing.expect(status.unknown_transaction_commit);
     try std.testing.expect(status.no_writes_performed);
     try std.testing.expect(status.retryableRead());
+}
+
+test "operation timeout is not retried after its budget expires" {
+    try std.testing.expect(isRetryableTransportError(error.SocketTimeout));
+    try std.testing.expect(!isRetryableTransportError(error.OperationTimeout));
 }
