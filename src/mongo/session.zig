@@ -40,7 +40,10 @@ pub const Error = error{
 
 /// Explicit MongoDB client session.
 ///
-/// The `id` is encoded as BSON UUID subtype 4 in the `lsid` document.
+/// The `id` is encoded as BSON UUID subtype 4 in the `lsid` document. The same
+/// transaction-number counter is used by multi-document transactions and by
+/// retryable single-document writes so a command can be resent with the exact
+/// same `(lsid, txnNumber)` pair.
 pub const Session = struct {
     id: [16]u8,
     txn_number: i64 = -1,
@@ -66,6 +69,14 @@ pub const Session = struct {
         };
     }
 
+    pub fn nextTransactionNumber(self: *Session) Error!i64 {
+        if (self.txn_number == std.math.maxInt(i64)) {
+            return error.TransactionNumberOverflow;
+        }
+        self.txn_number += 1;
+        return self.txn_number;
+    }
+
     pub fn beginTransaction(
         self: *Session,
         options: TransactionOptions,
@@ -74,10 +85,7 @@ pub const Session = struct {
             .starting, .in_progress => return error.TransactionAlreadyActive,
             else => {},
         }
-        if (self.txn_number == std.math.maxInt(i64)) {
-            return error.TransactionNumberOverflow;
-        }
-        self.txn_number += 1;
+        _ = try self.nextTransactionNumber();
         self.transaction_state = .starting;
         self.transaction_options = options;
     }
@@ -123,13 +131,14 @@ test "session uses BSON UUID lsid and monotonic transaction numbers" {
     try std.testing.expectEqual(bson.BinarySubtype.uuid, lsid.id.subtype);
     try std.testing.expectEqual(@as(usize, 16), lsid.id.data.len);
 
+    try std.testing.expectEqual(@as(i64, 0), try session.nextTransactionNumber());
     try session.beginTransaction(.{});
-    try std.testing.expectEqual(@as(i64, 0), session.txn_number);
+    try std.testing.expectEqual(@as(i64, 1), session.txn_number);
     try std.testing.expect(session.isFirstTransactionCommand());
     try session.markCommandSucceeded();
     try std.testing.expectEqual(TransactionState.in_progress, session.transaction_state);
     try session.markCommitted();
     session.reset();
     try session.beginTransaction(.{});
-    try std.testing.expectEqual(@as(i64, 1), session.txn_number);
+    try std.testing.expectEqual(@as(i64, 2), session.txn_number);
 }
