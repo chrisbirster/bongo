@@ -82,6 +82,26 @@ pub fn build(b: *std.Build) void {
     );
     runtime_integration_test_step.dependOn(&run_runtime_integration_tests.step);
 
+    // Compile the Deez-facing surface through the build graph rather than
+    // invoking `zig test src/deez_readiness.zig` directly. That direct command
+    // bypasses this build file and therefore cannot see the patched Zig 0.16
+    // TLS client module imported by tls_connection.zig.
+    const deez_readiness_module = b.createModule(.{
+        .root_source_file = b.path("src/deez_readiness.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    deez_readiness_module.addImport("bongo_zig_tls_client", patched_tls_module);
+    const deez_readiness_tests = b.addTest(.{
+        .root_module = deez_readiness_module,
+    });
+    const run_deez_readiness_tests = b.addRunArtifact(deez_readiness_tests);
+    const deez_readiness_step = b.step(
+        "deez-readiness-test",
+        "Compile and test the Deez-facing Bongo surface",
+    );
+    deez_readiness_step.dependOn(&run_deez_readiness_tests.step);
+
     const exe = b.addExecutable(.{
         .name = "bongo",
         .root_module = b.createModule(.{
