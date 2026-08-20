@@ -4,10 +4,32 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Zig 0.16's std.crypto.tls.Client rejects a TLS CertificateRequest when
+    // the application has no client certificate, even though TLS 1.2/1.3
+    // define an empty Certificate response for that case. Generate a narrowly
+    // patched copy from the *active compiler's* stdlib source. Nothing in the
+    // Zig installation is modified. See docs/zig-0.16-tls-gap.md.
+    const zig_tls_client_path = b.graph.zig_lib_directory.join(
+        b.allocator,
+        &.{ "std", "crypto", "tls", "Client.zig" },
+    ) catch @panic("unable to resolve Zig stdlib TLS client path");
+    const generate_tls_client = b.addSystemCommand(&.{"python3"});
+    generate_tls_client.addFileArg(b.path("tools/vendor_zig_0_16_tls_client.py"));
+    generate_tls_client.addArg(zig_tls_client_path);
+    const patched_tls_source = generate_tls_client.addOutputFileArg(
+        "zig_0_16_tls_client.zig",
+    );
+    const patched_tls_module = b.createModule(.{
+        .root_source_file = patched_tls_source,
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("bongo", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    mod.addImport("bongo_zig_tls_client", patched_tls_module);
 
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
