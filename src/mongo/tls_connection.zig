@@ -1,4 +1,5 @@
 const std = @import("std");
+const connect_timeout = @import("connect_timeout.zig");
 const operation_timeout = @import("operation_timeout.zig");
 const uri_options = @import("uri_options.zig");
 
@@ -101,7 +102,6 @@ pub const TlsConnection = struct {
             return error.ClientCertificateUnsupported;
         }
 
-        const host_name = try net.HostName.init(host);
         const now = Io.Clock.real.now(io);
 
         // Before `handed_off` becomes true, locals own every resource. After
@@ -141,12 +141,13 @@ pub const TlsConnection = struct {
         const tls_write_buffer = try allocator.alloc(u8, tls_buffer_size);
         errdefer if (!handed_off) allocator.free(tls_write_buffer);
 
-        var stream = host_name.connect(io, port, .{
-            .mode = .stream,
-            .protocol = .tcp,
-            .timeout = timeoutFromMs(options.connect_timeout_ms),
-        }) catch |err| switch (err) {
-            error.Timeout => return error.ConnectTimeout,
+        var stream = connect_timeout.connect(
+            io,
+            host,
+            port,
+            options.connect_timeout_ms,
+        ) catch |err| switch (err) {
+            error.ConnectTimeout => return error.ConnectTimeout,
             else => |e| return e,
         };
         errdefer if (!handed_off) stream.close(io);
@@ -375,19 +376,6 @@ pub const TlsConnection = struct {
         @memcpy(message[0..4], &length_bytes);
         try self.tls_client.reader.readSliceAll(message[4..]);
         return message;
-    }
-
-    fn timeoutFromMs(value: ?u32) Io.Timeout {
-        const milliseconds = activeTimeout(value) orelse return .none;
-        return .{ .duration = .{
-            .raw = Io.Duration.fromMilliseconds(milliseconds),
-            .clock = .awake,
-        } };
-    }
-
-    fn activeTimeout(value: ?u32) ?u32 {
-        const milliseconds = value orelse return null;
-        return if (milliseconds == 0) null else milliseconds;
     }
 };
 
