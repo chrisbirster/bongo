@@ -5,9 +5,10 @@ test "41 - verified TLS transport authenticates with SCRAM and reaches MongoDB" 
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const ca_path = try std.fs.cwd().realpathAlloc(
-        allocator,
+    const ca_path = try std.Io.Dir.cwd().realPathFileAlloc(
+        io,
         ".bongo-tls/server-cert.pem",
+        allocator,
     );
     defer allocator.free(ca_path);
 
