@@ -15,11 +15,26 @@ pub const Error = error{
 
 /// Connect to a host without using `Io.net.ConnectOptions.timeout`.
 ///
-/// Zig 0.16.0's Threaded POSIX backend currently panics when a non-none
-/// connect timeout reaches `netConnectIpPosix`. Bongo races an ordinary
-/// timeout-free connect against an awake-clock deadline instead. This keeps
-/// `connectTimeoutMS` usable on Linux/macOS without depending on the unfinished
-/// stdlib branch. See docs/zig-0.16-tls-gap.md.
+/// This is a Zig 0.16.0 compatibility workaround, not a MongoDB-specific
+/// timeout algorithm. `std.Io.Threaded.netConnectIpPosix` contains an explicit
+/// unfinished branch for timed connects:
+///
+/// `if (options.timeout != .none) @panic("TODO implement netConnectIpPosix with timeout");`
+///
+/// In the 0.16-era stdlib source this is around
+/// `lib/std/Io/Threaded.zig:9185`; exact line offsets can differ between the
+/// release archive/package-manager copy. The stable upstream reference is
+/// ziglang/zig#25747 ("std.Io.Threaded: implement netConnect with timeout").
+///
+/// Passing MongoDB `connectTimeoutMS` directly to that stdlib option would
+/// therefore abort the process on the Threaded POSIX backend instead of
+/// returning a timeout error. Bongo races an ordinary timeout-free connect
+/// against an awake-clock deadline with `Io.Select`; the connect result wins
+/// if it completes first, otherwise Bongo cancels/discards it and returns
+/// `error.ConnectTimeout`. Both plain TCP and TLS use this helper so Linux and
+/// macOS have the same bounded behavior without entering the unfinished Zig
+/// path. Remove this workaround once Bongo's minimum Zig version implements
+/// POSIX connect timeouts natively. See docs/zig-0.16-tls-gap.md.
 pub fn connect(
     io: Io,
     host: []const u8,
