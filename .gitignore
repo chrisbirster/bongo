@@ -5,3 +5,5 @@ zig-out/
 # macOS
 .DS_Store
 **/.DS_Store
+# Local MongoDB test fixtures
+.bongo-tls/
