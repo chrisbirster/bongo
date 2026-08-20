@@ -7,6 +7,7 @@ export MONGO_IMAGE
 	help \
 	test \
 	unit-test \
+	spec-test \
 	integration-test \
 	tls-integration-test \
 	runtime-integration-test \
@@ -20,6 +21,7 @@ help:
 	@printf '%s\n' \
 		'make test                     Run the complete Bongo test suite' \
 		'make unit-test                Run unit tests only' \
+		'make spec-test                Run MongoDB specification harness tests' \
 		'make integration-test         Run normal MongoDB integration tests' \
 		'make tls-integration-test     Run TLS integration test' \
 		'make runtime-integration-test Run RuntimeClient transaction test' \
@@ -34,6 +36,7 @@ help:
 # than parallel test noise.
 test:
 	@$(MAKE) unit-test
+	@$(MAKE) spec-test
 	@$(MAKE) integration-test
 	@$(MAKE) tls-integration-test
 	@$(MAKE) runtime-integration-test
@@ -42,6 +45,9 @@ test:
 
 unit-test:
 	zig build test
+
+spec-test:
+	zig build spec-test
 
 integration-test:
 	@./scripts/ensure-mongo-fixture.sh standalone
