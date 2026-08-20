@@ -28,6 +28,8 @@ pub const Error = error{
     SessionsUnsupported,
     TransactionsUnsupported,
     ActiveHandles,
+    ClientBusy,
+    ClientClosed,
     EmptyDatabase,
     EmptyCollection,
     InvalidCursorResponse,
@@ -52,18 +54,23 @@ pub const OwnedDocument = struct {
 /// URI-driven MongoDB client intended for application code that needs TLS,
 /// SRV discovery, server selection, pooling, sessions and transactions.
 ///
-/// The original `Client` remains source compatible for the v0.1/v0.2 API.
-/// Deez should use this managed client.
+/// Shared mutable RuntimeClient state and the underlying pool are synchronized
+/// for concurrent callers. Cursor and Transaction values remain single-owner
+/// handles; callers must not concurrently mutate the same handle value.
 pub const RuntimeClient = struct {
     allocator: Allocator,
     io: Io,
     connection_options: uri_options.Options,
     pool: Pool,
+    state_mutex: std.Thread.Mutex = .{},
     selected_host: usize = 0,
     next_request_id: i32 = 1,
     supports_sessions: bool = false,
     supports_transactions: bool = false,
+    capabilities_initialized: bool = false,
     active_handles: usize = 0,
+    active_operations: usize = 0,
+    closing: bool = false,
 
     pub fn connectUri(
         io: Io,
@@ -96,12 +103,23 @@ pub const RuntimeClient = struct {
 
     pub fn deinit(self: *RuntimeClient) void {
         self.deinitChecked() catch @panic(
-            "RuntimeClient.deinit called while Cursor or Transaction handles are still active",
+            "RuntimeClient.deinit called while the client is busy or child handles are active",
         );
     }
 
     pub fn deinitChecked(self: *RuntimeClient) Error!void {
-        if (self.active_handles != 0) return error.ActiveHandles;
+        self.state_mutex.lock();
+        if (self.active_handles != 0) {
+            self.state_mutex.unlock();
+            return error.ActiveHandles;
+        }
+        if (self.active_operations != 0) {
+            self.state_mutex.unlock();
+            return error.ClientBusy;
+        }
+        self.closing = true;
+        self.state_mutex.unlock();
+
         self.pool.deinit();
         self.connection_options.deinit();
         self.* = undefined;
@@ -117,6 +135,8 @@ pub const RuntimeClient = struct {
         collection_name: []const u8,
         document: anytype,
     ) !crud.InsertOneResult {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         defer self.releaseTransport(&transport);
@@ -142,6 +162,8 @@ pub const RuntimeClient = struct {
         update: anytype,
         upsert: bool,
     ) !crud.UpdateResult {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         defer self.releaseTransport(&transport);
@@ -168,6 +190,8 @@ pub const RuntimeClient = struct {
         collection_name: []const u8,
         filter: anytype,
     ) !crud.DeleteResult {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         defer self.releaseTransport(&transport);
@@ -192,6 +216,8 @@ pub const RuntimeClient = struct {
         filter: anytype,
         options: anytype,
     ) !Cursor {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         errdefer self.releaseTransport(&transport);
@@ -226,6 +252,8 @@ pub const RuntimeClient = struct {
         collection_name: []const u8,
         filter: anytype,
     ) !?OwnedDocument {
+        try self.beginOperation();
+        defer self.endOperation();
         var cursor = try self.find(
             database_name,
             collection_name,
@@ -248,6 +276,8 @@ pub const RuntimeClient = struct {
         update: anytype,
         upsert: bool,
     ) !?OwnedDocument {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         defer self.releaseTransport(&transport);
@@ -283,6 +313,8 @@ pub const RuntimeClient = struct {
         name: []const u8,
         options: anytype,
     ) !void {
+        try self.beginOperation();
+        defer self.endOperation();
         try validateNamespace(database_name, collection_name);
         var transport: ?Transport = try self.checkout();
         defer self.releaseTransport(&transport);
@@ -307,6 +339,8 @@ pub const RuntimeClient = struct {
         self: *RuntimeClient,
         options: session_mod.TransactionOptions,
     ) !Transaction {
+        try self.beginOperation();
+        defer self.endOperation();
         if (!self.supports_sessions) return error.SessionsUnsupported;
         if (!self.supports_transactions) return error.TransactionsUnsupported;
         var transport: ?Transport = try self.checkout();
@@ -321,6 +355,20 @@ pub const RuntimeClient = struct {
             .transport = owned_transport,
             .session = session,
         };
+    }
+
+    fn beginOperation(self: *RuntimeClient) Error!void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        if (self.closing) return error.ClientClosed;
+        self.active_operations += 1;
+    }
+
+    fn endOperation(self: *RuntimeClient) void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        std.debug.assert(self.active_operations > 0);
+        self.active_operations -= 1;
     }
 
     fn checkout(self: *RuntimeClient) !Transport {
@@ -360,10 +408,15 @@ pub const RuntimeClient = struct {
     }
 
     fn retainHandle(self: *RuntimeClient) void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        std.debug.assert(!self.closing);
         self.active_handles += 1;
     }
 
     fn releaseHandle(self: *RuntimeClient) void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
         std.debug.assert(self.active_handles > 0);
         self.active_handles -= 1;
     }
@@ -402,20 +455,19 @@ pub const RuntimeClient = struct {
                 transport.deinit();
                 continue;
             }
-            self.selected_host = index;
-            self.supports_sessions = description.logical_session_timeout_minutes != null;
-            self.supports_transactions = description.supports_transactions;
             self.authenticate(&transport) catch |err| {
                 transport.deinit();
                 return err;
             };
+            self.recordSelection(index, description);
             return transport;
         }
         return error.NoWritableServer;
     }
 
     fn openSelectedTransport(self: *RuntimeClient) !Transport {
-        var transport: ?Transport = self.openTransport(self.selected_host) catch
+        const selected_host = self.selectedHost();
+        var transport: ?Transport = self.openTransport(selected_host) catch
             return self.openWritableTransport();
         errdefer if (transport) |*owned| owned.deinit();
 
@@ -491,7 +543,30 @@ pub const RuntimeClient = struct {
         }
     }
 
+    fn selectedHost(self: *RuntimeClient) usize {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        return self.selected_host;
+    }
+
+    fn recordSelection(
+        self: *RuntimeClient,
+        index: usize,
+        description: topology.ServerDescription,
+    ) void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        self.selected_host = index;
+        if (!self.capabilities_initialized) {
+            self.supports_sessions = description.logical_session_timeout_minutes != null;
+            self.supports_transactions = description.supports_transactions;
+            self.capabilities_initialized = true;
+        }
+    }
+
     fn takeRequestId(self: *RuntimeClient) i32 {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
         const result = self.next_request_id;
         self.next_request_id = if (result == std.math.maxInt(i32)) 1 else result + 1;
         return result;
