@@ -63,9 +63,9 @@
         //},
     },
     // Specifies the set of files and directories that are included in this package.
-    // Only files and directories listed here are included in the `hash` that
-    // is computed for this package. Only files listed here will remain on disk
-    // when using the zig package manager. As a rule of thumb, one should list
+    // Only files and directories listed here are included in the `hash` that is
+    // computed for this package. Only files listed here will remain on disk
+    // when using the Zig package manager. As a rule of thumb, one should list
     // files required for compilation plus any license(s).
     // Paths are relative to the build root. Use the empty string (`""`) to refer to
     // the build root itself.
@@ -74,8 +74,6 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "tools",
     },
 }
