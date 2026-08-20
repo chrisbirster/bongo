@@ -62,11 +62,19 @@ pub fn handshake(
     return requestDescription(transport, allocator, request, request_id);
 }
 
-/// Issue a subsequent topology `hello` without initial-handshake metadata.
-/// RuntimeClient currently performs one handshake per newly-created socket;
-/// this entry point exists for future monitoring without accidentally sending
-/// `client` metadata twice on a connection.
+/// Backward-compatible name used by RuntimeClient for a newly-created socket.
+/// RuntimeClient does not yet perform background topology monitoring, so every
+/// topology probe today is the connection's initial handshake.
 pub fn hello(
+    transport: *Transport,
+    allocator: Allocator,
+    request_id: i32,
+) !ServerDescription {
+    return handshake(transport, allocator, request_id, .{});
+}
+
+/// Issue a subsequent topology `hello` without initial-handshake metadata.
+pub fn monitorHello(
     transport: *Transport,
     allocator: Allocator,
     request_id: i32,
