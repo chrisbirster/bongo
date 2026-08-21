@@ -9,6 +9,7 @@ const operation_timeout = @import("operation_timeout.zig");
 const pool_mod = @import("pool.zig");
 const pool_wait = @import("pool_wait.zig");
 const sdam_monitor = @import("sdam_monitor.zig");
+const topology = @import("topology.zig");
 const TlsConnection = @import("tls_connection.zig").TlsConnection;
 const TlsOptions = @import("tls_connection.zig").Options;
 const Transport = @import("transport.zig").Transport;
@@ -186,6 +187,19 @@ pub const Runtime = struct {
             };
 
             var transport = self.openTransport(server_pool) catch |err| {
+                server_pool.pool.cancelCreate(permit);
+                return err;
+            };
+            _ = topology.handshake(
+                &transport,
+                self.allocator,
+                self.takeRequestId(),
+                .{
+                    .app_name = self.connection_options.app_name,
+                    .load_balanced = self.connection_options.load_balanced == true,
+                },
+            ) catch |err| {
+                transport.deinit();
                 server_pool.pool.cancelCreate(permit);
                 return err;
             };
