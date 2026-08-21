@@ -128,8 +128,6 @@ pub const Topology = struct {
             }
         }
 
-        // Discovery happens before role assignment so a single seed can expand
-        // into the complete replica-set member list during the first scan.
         try self.ensureAddresses(description.hosts);
         try self.ensureAddresses(description.passives);
         try self.ensureAddresses(description.arbiters);
@@ -210,7 +208,8 @@ pub const Topology = struct {
             if (fastest == null or rtt < fastest.?) fastest = rtt;
         }
         const min_rtt = fastest orelse return error.NoSuitableServer;
-        const window = min_rtt + @as(f64, @floatFromInt(local_threshold_ms));
+        const threshold: f64 = @floatFromInt(local_threshold_ms);
+        const window = min_rtt + threshold;
 
         var eligible_count: usize = 0;
         for (self.servers.items, 0..) |server, index| {
@@ -353,7 +352,8 @@ pub const Topology = struct {
         if (!server.suitableForReads()) return false;
         if (server.server_type == .rs_secondary and preference.max_staleness_seconds != null) {
             if (self.stalenessMs(index, heartbeat_frequency_ms)) |staleness| {
-                const max_ms = @as(i64, preference.max_staleness_seconds.?) * 1000;
+                const max_seconds: i64 = @intCast(preference.max_staleness_seconds.?);
+                const max_ms = max_seconds * 1000;
                 if (staleness > max_ms) return false;
             } else return false;
         }
@@ -363,9 +363,10 @@ pub const Topology = struct {
     fn stalenessMs(self: *const Topology, index: usize, heartbeat_frequency_ms: u32) ?i64 {
         const secondary = self.servers.items[index];
         const secondary_last = secondary.last_write_date_ms orelse return null;
+        const heartbeat_ms: i64 = @intCast(heartbeat_frequency_ms);
         if (self.primaryIndex()) |primary_index| {
             const primary_last = self.servers.items[primary_index].last_write_date_ms orelse return null;
-            return @max(@as(i64, 0), primary_last - secondary_last) + heartbeat_frequency_ms;
+            return @max(@as(i64, 0), primary_last - secondary_last) + heartbeat_ms;
         }
         var newest: ?i64 = null;
         for (self.servers.items) |server| {
@@ -374,7 +375,7 @@ pub const Topology = struct {
             if (newest == null or last > newest.?) newest = last;
         }
         const newest_last = newest orelse return null;
-        return @max(@as(i64, 0), newest_last - secondary_last) + heartbeat_frequency_ms;
+        return @max(@as(i64, 0), newest_last - secondary_last) + heartbeat_ms;
     }
 };
 
@@ -409,10 +410,10 @@ fn tagSetMatches(server_tags: ?[]u8, desired: []const u8) bool {
     while (desired_reader.next() catch return false) |element| {
         had_tag = true;
         const tags = server_tags orelse return false;
-        const actual = bson.Reader.get(tags, element.name) catch return false orelse return false;
+        const actual_optional = bson.Reader.get(tags, element.name) catch return false;
+        const actual = actual_optional orelse return false;
         if (!valueEqual(actual, element.value)) return false;
     }
-    // An empty tag set matches every server, as required by read preference.
     return !had_tag or server_tags != null;
 }
 
@@ -510,7 +511,9 @@ test "latency window filters slow read candidates" {
         try bson.encode(allocator, .{ .ok = @as(i32, 1), .secondary = true, .setName = "rs0", .lastWrite = .{ .lastWriteDate = bson.DateTime{ .milliseconds = 9_999 } } }),
         try bson.encode(allocator, .{ .ok = @as(i32, 1), .secondary = true, .setName = "rs0", .lastWrite = .{ .lastWriteDate = bson.DateTime{ .milliseconds = 9_999 } } }),
     };
-    defer for (bodies) |body| allocator.free(body);
+    defer {
+        for (bodies) |body| allocator.free(body);
+    }
     const addresses = [_][]const u8{ "db1:27017", "db2:27017", "db3:27017" };
     const rtts = [_]f64{ 2.0, 5.0, 40.0 };
     for (bodies, addresses, rtts) |body, address, rtt| {
