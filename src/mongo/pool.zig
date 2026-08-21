@@ -10,12 +10,12 @@ pub const Error = error{
     PoolClosed,
     PoolCleared,
     ConnectLimitReached,
-    InvalidMaxSize,
     InvalidMinSize,
     InvalidMaxConnecting,
 };
 
 pub const State = enum {
+    paused,
     ready,
     closing,
     closed,
@@ -23,7 +23,8 @@ pub const State = enum {
 
 pub const Options = struct {
     min_size: usize = 0,
-    max_size: usize = 4,
+    /// CMAP: 0 means unlimited; otherwise the cap includes pending + idle + in-use.
+    max_size: usize = 100,
     max_connecting: usize = 2,
 };
 
@@ -54,9 +55,8 @@ pub const Stats = struct {
     waiters: usize,
 };
 
-/// Bounded reusable transport pool with explicit lifecycle, accounting,
-/// generation-based clear semantics, controlled physical connection creation,
-/// and a Zig 0.16 `Io.Condition` wait queue.
+/// CMAP-oriented reusable transport pool with explicit lifecycle, generation
+/// clearing, controlled connection establishment, and a Zig 0.16 Io wait queue.
 pub const Pool = struct {
     allocator: Allocator,
     io: Io,
@@ -65,7 +65,7 @@ pub const Pool = struct {
     max_connecting: usize,
     mutex: Io.Mutex = Io.Mutex.init,
     condition: Io.Condition = std.mem.zeroes(Io.Condition),
-    state: State = .ready,
+    state: State = .paused,
     generation: u64 = 0,
     created: usize = 0,
     connecting: usize = 0,
@@ -78,8 +78,9 @@ pub const Pool = struct {
     }
 
     pub fn initWithOptions(io: Io, allocator: Allocator, options: Options) Error!Pool {
-        if (options.max_size == 0) return error.InvalidMaxSize;
-        if (options.min_size > options.max_size) return error.InvalidMinSize;
+        if (options.max_size > 0 and options.min_size > options.max_size) {
+            return error.InvalidMinSize;
+        }
         if (options.max_connecting == 0) return error.InvalidMaxConnecting;
         return .{
             .allocator = allocator,
@@ -88,6 +89,21 @@ pub const Pool = struct {
             .max_size = options.max_size,
             .max_connecting = options.max_connecting,
         };
+    }
+
+    /// Transition a paused pool to ready after SDAM has determined its server
+    /// may service operations. Idempotent for an already-ready pool.
+    pub fn ready(self: *Pool) Error!void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        switch (self.state) {
+            .paused => {
+                self.state = .ready;
+                self.condition.broadcast(self.io);
+            },
+            .ready => {},
+            .closing, .closed => return error.PoolClosed,
+        }
     }
 
     pub fn deinit(self: *Pool) void {
@@ -119,15 +135,15 @@ pub const Pool = struct {
         self.condition.broadcast(self.io);
     }
 
-    /// Clear the current pool generation without closing the client. Idle
-    /// connections are closed immediately. Checked-out handles remain owned by
-    /// their callers but become stale and will be discarded when checked in.
-    /// In-flight creation permits from the old generation are rejected when
-    /// their connection attempt completes.
+    /// CMAP clear: invalidate the generation, close idle connections, evict
+    /// waiters, and pause the pool until SDAM calls `ready` again.
     pub fn clear(self: *Pool) Error!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        if (self.state != .ready) return error.PoolClosed;
+        switch (self.state) {
+            .closing, .closed => return error.PoolClosed,
+            .paused, .ready => {},
+        }
 
         self.generation +%= 1;
         const idle_count = self.idle.items.len;
@@ -135,6 +151,7 @@ pub const Pool = struct {
         self.idle.clearRetainingCapacity();
         std.debug.assert(self.created >= idle_count);
         self.created -= idle_count;
+        self.state = .paused;
         self.condition.broadcast(self.io);
     }
 
@@ -158,11 +175,16 @@ pub const Pool = struct {
     pub fn tryStartCreate(self: *Pool) Error!CreatePermit {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        if (self.state != .ready) return error.PoolClosed;
-        if (self.created + self.connecting >= self.max_size) return error.PoolExhausted;
-        if (self.connecting >= self.max_connecting) return error.ConnectLimitReached;
-        self.connecting += 1;
-        return .{ .generation = self.generation };
+        return switch (self.state) {
+            .paused => error.PoolCleared,
+            .closing, .closed => error.PoolClosed,
+            .ready => blk: {
+                if (!self.underMaxLocked()) break :blk error.PoolExhausted;
+                if (self.connecting >= self.max_connecting) break :blk error.ConnectLimitReached;
+                self.connecting += 1;
+                break :blk .{ .generation = self.generation };
+            },
+        };
     }
 
     /// Convert a creation reservation into a checked-out live connection.
@@ -172,16 +194,23 @@ pub const Pool = struct {
         std.debug.assert(self.connecting > 0);
         self.connecting -= 1;
 
-        if (self.state != .ready) {
-            self.maybeFinishCloseLocked();
-            self.condition.broadcast(self.io);
-            return error.PoolClosed;
+        switch (self.state) {
+            .paused => {
+                self.condition.broadcast(self.io);
+                return error.PoolCleared;
+            },
+            .closing, .closed => {
+                self.maybeFinishCloseLocked();
+                self.condition.broadcast(self.io);
+                return error.PoolClosed;
+            },
+            .ready => {},
         }
         if (permit.generation != self.generation) {
             self.condition.broadcast(self.io);
             return error.PoolCleared;
         }
-        if (self.created >= self.max_size) {
+        if (self.max_size > 0 and self.created >= self.max_size) {
             self.condition.signal(self.io);
             return error.PoolExhausted;
         }
@@ -199,7 +228,7 @@ pub const Pool = struct {
         std.debug.assert(self.connecting > 0);
         self.connecting -= 1;
         self.maybeFinishCloseLocked();
-        if (self.state == .closed) {
+        if (self.state == .closed or self.state == .paused) {
             self.condition.broadcast(self.io);
         } else {
             self.condition.signal(self.io);
@@ -219,13 +248,16 @@ pub const Pool = struct {
     }
 
     /// Block while no idle connection is available and creation cannot start.
-    /// Callers retry `take`/`tryStartCreate` after wakeup because another waiter
-    /// may win either the idle connection or a creation slot.
+    /// Clearing the pool evicts waiters with PoolCleared as required by CMAP.
     pub fn waitForAvailability(self: *Pool) Error!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        if (self.state != .ready) return error.PoolClosed;
+        switch (self.state) {
+            .paused => return error.PoolCleared,
+            .closing, .closed => return error.PoolClosed,
+            .ready => {},
+        }
         if (self.idle.items.len != 0 or self.canStartCreateLocked()) return;
 
         self.waiters += 1;
@@ -237,15 +269,25 @@ pub const Pool = struct {
         {
             self.condition.waitUncancelable(self.io, &self.mutex);
         }
-        if (self.state != .ready) return error.PoolClosed;
+
+        return switch (self.state) {
+            .ready => {},
+            .paused => error.PoolCleared,
+            .closing, .closed => error.PoolClosed,
+        };
     }
 
     /// Return a healthy checked-out transport to the idle pool. Handles from a
-    /// cleared generation are rejected so RuntimeClient can destroy them.
+    /// cleared generation or a paused pool are rejected so RuntimeClient can
+    /// destroy them.
     pub fn put(self: *Pool, handle: Handle) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        if (self.state != .ready) return error.PoolClosed;
+        switch (self.state) {
+            .paused => return error.PoolCleared,
+            .closing, .closed => return error.PoolClosed,
+            .ready => {},
+        }
         if (handle.generation != self.generation) return error.PoolCleared;
         std.debug.assert(self.checked_out > 0);
         try self.idle.append(self.allocator, handle);
@@ -254,8 +296,7 @@ pub const Pool = struct {
     }
 
     /// Account for permanently discarding a checked-out connection after a
-    /// transport failure, stale-generation rejection, or shutdown. The caller
-    /// deinitializes the physical transport before calling this.
+    /// transport failure, stale-generation rejection, or shutdown.
     pub fn noteDiscarded(self: *Pool) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -264,7 +305,7 @@ pub const Pool = struct {
         self.created -= 1;
         self.checked_out -= 1;
         self.maybeFinishCloseLocked();
-        if (self.state == .closed) {
+        if (self.state == .closed or self.state == .paused) {
             self.condition.broadcast(self.io);
         } else {
             self.condition.signal(self.io);
@@ -300,9 +341,13 @@ pub const Pool = struct {
         return self.stats().checked_out;
     }
 
+    fn underMaxLocked(self: *Pool) bool {
+        return self.max_size == 0 or self.created + self.connecting < self.max_size;
+    }
+
     fn canStartCreateLocked(self: *Pool) bool {
         return self.state == .ready and
-            self.created + self.connecting < self.max_size and
+            self.underMaxLocked() and
             self.connecting < self.max_connecting;
     }
 
@@ -316,11 +361,14 @@ pub const Pool = struct {
     }
 };
 
-test "pool validates sizing options" {
-    try std.testing.expectError(
-        error.InvalidMaxSize,
-        Pool.initWithOptions(std.testing.io, std.testing.allocator, .{ .max_size = 0 }),
-    );
+test "pool validates sizing options and supports unlimited maxPoolSize" {
+    var unlimited = try Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
+        .max_size = 0,
+    });
+    defer unlimited.deinit();
+    try unlimited.ready();
+    try std.testing.expect(unlimited.canCreate());
+
     try std.testing.expectError(
         error.InvalidMinSize,
         Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
@@ -342,6 +390,7 @@ test "bounded pool accounts for checked-out lifecycle" {
         .max_connecting = 2,
     });
     defer pool.deinit();
+    try pool.ready();
 
     const first = try pool.tryStartCreate();
     try pool.finishCreate(first);
@@ -372,6 +421,7 @@ test "creation permits enforce maxConnecting before network work" {
         .max_connecting = 1,
     });
     defer pool.deinit();
+    try pool.ready();
 
     const permit = try pool.tryStartCreate();
     try std.testing.expectEqual(@as(usize, 1), pool.stats().connecting);
@@ -380,12 +430,13 @@ test "creation permits enforce maxConnecting before network work" {
     try std.testing.expectEqual(@as(usize, 0), pool.stats().connecting);
 }
 
-test "pool clear rejects old generation creation permits" {
+test "pool clear pauses and rejects old generation creation permits" {
     var pool = try Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
         .max_size = 2,
         .max_connecting = 2,
     });
     defer pool.deinit();
+    try pool.ready();
 
     const checked_out = try pool.tryStartCreate();
     try pool.finishCreate(checked_out);
@@ -393,14 +444,16 @@ test "pool clear rejects old generation creation permits" {
 
     try pool.clear();
     const snapshot = pool.stats();
+    try std.testing.expectEqual(State.paused, snapshot.state);
     try std.testing.expectEqual(@as(u64, 1), snapshot.generation);
     try std.testing.expectEqual(@as(usize, 1), snapshot.total);
     try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
     try std.testing.expectEqual(@as(usize, 1), snapshot.connecting);
     try std.testing.expectError(error.PoolCleared, pool.finishCreate(in_flight));
-    try std.testing.expectEqual(@as(usize, 0), pool.stats().connecting);
+    try std.testing.expectError(error.PoolCleared, pool.tryStartCreate());
 
     pool.noteDiscarded();
+    try pool.ready();
     const current = try pool.tryStartCreate();
     try pool.finishCreate(current);
     pool.noteDiscarded();
@@ -414,6 +467,7 @@ test "pool accounting remains consistent under contention" {
         .max_connecting = 2,
     });
     defer pool.deinit();
+    try pool.ready();
 
     const Runner = struct {
         pool: *Pool,
@@ -452,11 +506,45 @@ test "pool accounting remains consistent under contention" {
     try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
 }
 
+test "pool clear evicts waiters with PoolCleared" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    var pool = try Pool.init(std.testing.io, std.testing.allocator, 1);
+    defer pool.deinit();
+    try pool.ready();
+    const permit = try pool.tryStartCreate();
+    try pool.finishCreate(permit);
+
+    const Waiter = struct {
+        pool: *Pool,
+        result: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.pool.waitForAvailability() catch |err| {
+                self.result = err;
+                return;
+            };
+        }
+    };
+
+    var waiter: Waiter = .{ .pool = &pool };
+    const thread = try std.Thread.spawn(.{}, Waiter.run, .{&waiter});
+    while (pool.stats().waiters == 0) {
+        std.Thread.yield() catch {};
+    }
+    try pool.clear();
+    thread.join();
+    try std.testing.expectEqual(error.PoolCleared, waiter.result.?);
+
+    pool.noteDiscarded();
+}
+
 test "pool close wakes waiters" {
     if (builtin.single_threaded) return error.SkipZigTest;
 
     var pool = try Pool.init(std.testing.io, std.testing.allocator, 1);
     defer pool.deinit();
+    try pool.ready();
     const permit = try pool.tryStartCreate();
     try pool.finishCreate(permit);
 
