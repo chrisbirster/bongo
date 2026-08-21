@@ -84,7 +84,7 @@ pub const Runtime = struct {
             return error.ActiveHandles;
         }
         self.closing = true;
-        const pools = self.pools;
+        var pools = self.pools;
         self.pools = .empty;
         self.mutex.unlock(self.io);
 
