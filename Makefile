@@ -11,6 +11,7 @@ export MONGO_IMAGE
 	integration-test \
 	tls-integration-test \
 	runtime-integration-test \
+	cmap-integration-test \
 	deez-readiness-test \
 	fixtures \
 	fixtures-status \
@@ -25,6 +26,7 @@ help:
 		'make integration-test         Run normal MongoDB integration tests' \
 		'make tls-integration-test     Run TLS integration test' \
 		'make runtime-integration-test Run RuntimeClient transaction test' \
+		'make cmap-integration-test    Run CMAP pool lifecycle integration tests' \
 		'make deez-readiness-test      Test the Deez-facing API surface' \
 		'make fixtures                 Ensure all MongoDB fixtures are ready' \
 		'make fixtures-status          Show fixture status' \
@@ -40,6 +42,7 @@ test:
 	@$(MAKE) integration-test
 	@$(MAKE) tls-integration-test
 	@$(MAKE) runtime-integration-test
+	@$(MAKE) cmap-integration-test
 	@$(MAKE) deez-readiness-test
 	@printf '\nBongo test suite passed.\n'
 
@@ -60,6 +63,10 @@ tls-integration-test:
 runtime-integration-test:
 	@./scripts/ensure-mongo-fixture.sh replica
 	zig build runtime-integration-test
+
+cmap-integration-test:
+	@./scripts/ensure-mongo-fixture.sh replica
+	zig build cmap-integration-test
 
 deez-readiness-test:
 	zig build deez-readiness-test
