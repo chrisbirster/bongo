@@ -31,7 +31,8 @@ test "43 - pool clear invalidates checked-out generation" {
 
     try client.pool.clear();
     const after_clear = client.pool.stats();
-    try std.testing.expectEqual(before_clear.generation +% 1, after_clear.generation);
+    try std.testing.expectEqual(@as(u64, before_clear.generation +% 1), after_clear.generation);
+    try std.testing.expectEqual(.paused, after_clear.state);
     try std.testing.expectEqual(@as(usize, 1), after_clear.total);
     try std.testing.expectEqual(@as(usize, 1), after_clear.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_clear.idle);
@@ -44,6 +45,9 @@ test "43 - pool clear invalidates checked-out generation" {
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.idle);
 
+    // SDAM owns this transition in the production path. The focused CMAP test
+    // drives it directly so a fresh generation can service the next checkout.
+    try client.pool.ready();
     _ = try client.insertOne(database, collection, .{
         ._id = @as(i64, 63002),
         .value = @as(i32, 2),
@@ -56,4 +60,49 @@ test "43 - pool clear invalidates checked-out generation" {
 
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63001) });
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63002) });
+}
+
+test "43 - minPoolSize is established during RuntimeClient connect" {
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_min?replicaSet=rs0",
+        .{
+            .min_pool_size = 3,
+            .max_pool_size = 3,
+            .max_connecting = 2,
+        },
+    );
+    defer client.deinit();
+
+    const snapshot = client.pool.stats();
+    try std.testing.expectEqual(.ready, snapshot.state);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.min_size);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.max_size);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.idle);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.checked_out);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.connecting);
+}
+
+test "43 - maxPoolSize zero is unlimited" {
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_unlimited?replicaSet=rs0",
+        .{ .max_pool_size = 0 },
+    );
+    defer client.deinit();
+
+    var first = try client.beginTransaction(.{});
+    defer first.deinit();
+    var second = try client.beginTransaction(.{});
+    defer second.deinit();
+    var third = try client.beginTransaction(.{});
+    defer third.deinit();
+
+    const snapshot = client.pool.stats();
+    try std.testing.expectEqual(@as(usize, 0), snapshot.max_size);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 3), snapshot.checked_out);
 }
