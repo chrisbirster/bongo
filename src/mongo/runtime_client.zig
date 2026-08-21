@@ -8,7 +8,9 @@ const find_and_modify = @import("find_and_modify.zig");
 const find_options = @import("find_options.zig");
 const index_admin = @import("index_admin.zig");
 const op_msg = @import("op_msg.zig");
+const operation_timeout = @import("operation_timeout.zig");
 const pool_mod = @import("pool.zig");
+const pool_wait = @import("pool_wait.zig");
 const Pool = pool_mod.Pool;
 const PoolHandle = pool_mod.Handle;
 const session_mod = @import("session.zig");
@@ -411,12 +413,18 @@ pub const RuntimeClient = struct {
     }
 
     fn checkout(self: *RuntimeClient) !PoolHandle {
+        const budget = try operation_timeout.Budget.start(
+            self.io,
+            self.connection_options.timeout_ms,
+        );
+        const deadline = budget.deadline;
+
         while (true) {
             if (self.pool.take()) |transport| return transport;
 
             const permit = self.pool.tryStartCreate() catch |err| switch (err) {
                 error.PoolExhausted, error.ConnectLimitReached => {
-                    try self.pool.waitForAvailability();
+                    try pool_wait.waitForAvailabilityUntil(&self.pool, deadline);
                     continue;
                 },
                 else => return err,
@@ -433,7 +441,7 @@ pub const RuntimeClient = struct {
                 },
                 error.PoolExhausted => {
                     transport.deinit();
-                    try self.pool.waitForAvailability();
+                    try pool_wait.waitForAvailabilityUntil(&self.pool, deadline);
                     continue;
                 },
                 else => {
