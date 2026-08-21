@@ -39,10 +39,12 @@ pub const Error = error{
     CommandFailed,
 };
 
+/// Programmatic CMAP overrides. Null fields inherit from the connection string,
+/// then from the CMAP defaults (min=0, max=100, maxConnecting=2).
 pub const Options = struct {
-    min_pool_size: usize = 0,
-    max_pool_size: usize = 100,
-    max_connecting: usize = 2,
+    min_pool_size: ?usize = null,
+    max_pool_size: ?usize = null,
+    max_connecting: ?usize = null,
 };
 
 pub const OwnedDocument = struct {
@@ -88,10 +90,13 @@ pub const RuntimeClient = struct {
             try uri_options.parse(allocator, connection_string);
         errdefer parsed.deinit();
 
+        const uri_min_pool_size: usize = if (parsed.min_pool_size) |value| value else 0;
+        const uri_max_pool_size: usize = if (parsed.max_pool_size) |value| value else 100;
+        const uri_max_connecting: usize = if (parsed.max_connecting) |value| value else 2;
         var pool = try Pool.initWithOptions(io, allocator, .{
-            .min_size = options.min_pool_size,
-            .max_size = options.max_pool_size,
-            .max_connecting = options.max_connecting,
+            .min_size = options.min_pool_size orelse uri_min_pool_size,
+            .max_size = options.max_pool_size orelse uri_max_pool_size,
+            .max_connecting = options.max_connecting orelse uri_max_connecting,
         });
         errdefer pool.deinit();
 
