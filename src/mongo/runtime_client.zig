@@ -62,7 +62,7 @@ pub const RuntimeClient = struct {
     io: Io,
     connection_options: uri_options.Options,
     pool: Pool,
-    state_mutex: std.Thread.Mutex = .{},
+    state_mutex: Io.Mutex = Io.Mutex.init,
     selected_host: usize = 0,
     next_request_id: i32 = 1,
     supports_sessions: bool = false,
@@ -84,7 +84,7 @@ pub const RuntimeClient = struct {
             try uri_options.parse(allocator, connection_string);
         errdefer parsed.deinit();
 
-        var pool = try Pool.init(allocator, options.max_pool_size);
+        var pool = try Pool.init(io, allocator, options.max_pool_size);
         errdefer pool.deinit();
 
         var self: RuntimeClient = .{
@@ -108,17 +108,17 @@ pub const RuntimeClient = struct {
     }
 
     pub fn deinitChecked(self: *RuntimeClient) Error!void {
-        self.state_mutex.lock();
+        self.state_mutex.lockUncancelable(self.io);
         if (self.active_handles != 0) {
-            self.state_mutex.unlock();
+            self.state_mutex.unlock(self.io);
             return error.ActiveHandles;
         }
         if (self.active_operations != 0) {
-            self.state_mutex.unlock();
+            self.state_mutex.unlock(self.io);
             return error.ClientBusy;
         }
         self.closing = true;
-        self.state_mutex.unlock();
+        self.state_mutex.unlock(self.io);
 
         self.pool.deinit();
         self.connection_options.deinit();
@@ -358,15 +358,15 @@ pub const RuntimeClient = struct {
     }
 
     fn beginOperation(self: *RuntimeClient) Error!void {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         if (self.closing) return error.ClientClosed;
         self.active_operations += 1;
     }
 
     fn endOperation(self: *RuntimeClient) void {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         std.debug.assert(self.active_operations > 0);
         self.active_operations -= 1;
     }
@@ -408,15 +408,15 @@ pub const RuntimeClient = struct {
     }
 
     fn retainHandle(self: *RuntimeClient) void {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         std.debug.assert(!self.closing);
         self.active_handles += 1;
     }
 
     fn releaseHandle(self: *RuntimeClient) void {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         std.debug.assert(self.active_handles > 0);
         self.active_handles -= 1;
     }
@@ -544,8 +544,8 @@ pub const RuntimeClient = struct {
     }
 
     fn selectedHost(self: *RuntimeClient) usize {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         return self.selected_host;
     }
 
@@ -554,8 +554,8 @@ pub const RuntimeClient = struct {
         index: usize,
         description: topology.ServerDescription,
     ) void {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         self.selected_host = index;
         if (!self.capabilities_initialized) {
             self.supports_sessions = description.logical_session_timeout_minutes != null;
@@ -565,8 +565,8 @@ pub const RuntimeClient = struct {
     }
 
     fn takeRequestId(self: *RuntimeClient) i32 {
-        self.state_mutex.lock();
-        defer self.state_mutex.unlock();
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         const result = self.next_request_id;
         self.next_request_id = if (result == std.math.maxInt(i32)) 1 else result + 1;
         return result;
