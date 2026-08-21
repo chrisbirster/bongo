@@ -2,6 +2,44 @@
 
 Bongo follows semantic versioning while the project is pre-1.0. Minor releases (`0.x.0`) represent coherent driver capability milestones; patch releases (`0.x.y`) are reserved for compatible fixes within a released milestone.
 
+## 0.4.0 — 2026-08-20
+
+Bongo 0.4.0 hardens the managed `RuntimeClient` for real application use on Zig 0.16, with safer failover, explicit connection ownership, concurrent-client synchronization, stronger handshake/error inspection, and a condition-based bounded pool wait queue.
+
+### Added
+
+- A one-command `make test` validation path that provisions and validates standalone, TLS, and replica-set MongoDB fixtures before running unit, specification, integration, runtime, and Deez-readiness gates.
+- A MongoDB specification-test harness foundation with a dedicated `zig build spec-test` gate and explicit supported/deferred suite tracking.
+- Public structured MongoDB error inspection through `MongoErrorStatus`, `MongoErrorLabel`, `inspectMongoError`, and `inspectMongoErrorBody`, including error codes, code names/messages, and standard retry/transaction labels.
+- Richer initial handshake metadata and server capability parsing, including the Zig 0.16-compatible handshake path used by `RuntimeClient`.
+- Explicit pool lifecycle/state accounting for total, idle, checked-out, and waiting connections.
+- A Zig 0.16 `std.Io.Condition` wait queue for `RuntimeClient` checkouts when `max_pool_size` is exhausted.
+- `RuntimeClient.requestShutdown()` to stop new work and wake blocked pool checkouts during shutdown.
+- Checked client teardown through `deinitChecked()` so active cursors, transactions, and in-flight operations cannot silently outlive the client.
+
+### Fixed
+
+- Failed socket/TLS requests are discarded instead of being returned to the reusable transport pool.
+- Pool check-in failure no longer allows double deinitialization/double accounting of a transport.
+- Failover cleanup no longer deinitializes the same selected transport twice when writable-server discovery also fails.
+- `RuntimeClient` now re-probes configured seeds when the remembered selected host becomes unreachable or its `hello` request fails.
+- Exhausted cursors release their transport as soon as MongoDB reports `cursor_id == 0`, so a live cursor value does not unnecessarily monopolize a small pool.
+- TLS/SCRAM/connect failure paths have regression coverage that verifies cleanup and successful reconnect behavior.
+- Shared `RuntimeClient` state and pool accounting use Zig 0.16 `std.Io.Mutex` synchronization for concurrent callers.
+- Pool shutdown wakes blocked waiters and transitions deterministically from ready to closing to closed.
+- Initial pool population and later allocation failures preserve transport ownership/accounting invariants.
+
+### Current limitations
+
+- Full SDAM background monitoring and the complete MongoDB server-selection specification are still not implemented; `RuntimeClient` performs writable-server probing across configured/SRV seeds.
+- The specification harness is infrastructure for progressively importing the official MongoDB test corpus; it does not yet claim full specification-suite coverage.
+- Pool waiting is condition-based and wakes on capacity changes or shutdown; a separate wait-queue timeout option is not exposed because Zig 0.16 `std.Io.Condition` does not provide a native timed-wait primitive.
+- Retryable reads/writes and the complete transaction retry/error-label behavior remain incomplete.
+- Read preference is modeled, but managed routing still focuses on the writable server required by Deez.
+- Zig 0.16 still does not expose the client-certificate/private-key TLS path needed for built-in mutual TLS and end-to-end `MONGODB-X509`.
+- SCRAM-SHA-256 password preparation still supports printable ASCII rather than complete SASLprep coverage.
+- Wire compression remains deferred; URI compressor options are parsed but `OP_COMPRESSED` is not enabled.
+
 ## 0.3.0 — 2026-08-19
 
 Bongo's third application-facing release hardens connection setup and adds the managed runtime capabilities needed by Deez: URI/SRV configuration, verified TLS + SCRAM, writable-server selection, bounded pooling, sessions, and transactions.
