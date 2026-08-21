@@ -42,16 +42,27 @@
         //
         //    // This is computed from the file contents of the directory of files that is
         //    // obtained after fetching `url` and applying the inclusion rules given by
-        //    // the `paths` below. A package's hash is derived from this field along with
-        //    // package contents. It is not coupled to Git metadata.
+        //    // `paths`.
+        //    //
+        //    // This field is the source of truth; packages do not come from a `url`; they
+        //    // come from a `hash`. `url` is just one of many possible mirrors for how to
+        //    // obtain a package matching this `hash`.
         //    .hash = "...",
         //
-        //    // Alternatively, depend on a sibling checkout with a relative path.
-        //    // This is useful for local development but not for published releases.
-        //    .path = "../example",
+        //    // When this is set to `true`, a package is declared to be lazily
+        //    // fetched. This makes the dependency only get fetched if it is
+        //    // actually used.
+        //    .lazy = false,
         //},
     },
-    // Includes the files needed to build Bongo when consumed as a Zig package.
+    // Specifies the set of files and directories that are included in this package.
+    // Only files and directories listed here are included in the `hash` that is
+    // computed for this package. Only files listed here will remain on disk
+    // when using the Zig package manager. As a rule of thumb, one should list
+    // files required for compilation plus any license(s).
+    // Paths are relative to the build root. Use the empty string (`""`) to refer to
+    // the build root itself.
+    // A directory listed here means that all files within, recursively, are included.
     .paths = .{
         "build.zig",
         "build.zig.zon",
