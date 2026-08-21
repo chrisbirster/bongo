@@ -1,6 +1,46 @@
 const std = @import("std");
 const bongo = @import("bongo");
 
+const MonitorKind = enum {
+    pool_opened,
+    pool_closed,
+    pool_cleared,
+    connection_created,
+    connection_ready,
+    connection_closed,
+    checkout_started,
+    checkout_failed,
+    checked_out,
+    checked_in,
+};
+
+const MonitorCollector = struct {
+    kinds: [32]MonitorKind = undefined,
+    len: usize = 0,
+
+    fn callback(context: ?*anyopaque, event: bongo.mongo.Pool.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        std.debug.assert(self.len < self.kinds.len);
+        self.kinds[self.len] = switch (event) {
+            .pool_opened => .pool_opened,
+            .pool_closed => .pool_closed,
+            .pool_cleared => .pool_cleared,
+            .connection_created => .connection_created,
+            .connection_ready => .connection_ready,
+            .connection_closed => .connection_closed,
+            .checkout_started => .checkout_started,
+            .checkout_failed => .checkout_failed,
+            .checked_out => .checked_out,
+            .checked_in => .checked_in,
+        };
+        self.len += 1;
+    }
+
+    fn monitor(self: *@This()) bongo.mongo.Pool.Monitor {
+        return .{ .context = self, .callback = callback };
+    }
+};
+
 test "43 - pool clear invalidates checked-out generation" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -107,6 +147,68 @@ test "43 - maxPoolSize zero is unlimited" {
     try std.testing.expectEqual(@as(usize, 3), snapshot.checked_out);
 }
 
+test "43 - CMAP monitor emits deterministic checkout and lifecycle events" {
+    const database = "bongo_cmap_monitor";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_monitor?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    defer client.deinit();
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63004) });
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .checkout_started, .checked_out, .checked_in },
+        collector.kinds[0..collector.len],
+    );
+
+    try client.pool.clear();
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{
+            .pool_opened,
+            .checkout_started,
+            .checked_out,
+            .checked_in,
+            .connection_closed,
+            .pool_cleared,
+        },
+        collector.kinds[0..collector.len],
+    );
+
+    try client.pool.ready();
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 63004),
+        .value = @as(i32, 4),
+    });
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{
+            .pool_opened,
+            .checkout_started,
+            .checked_out,
+            .checked_in,
+            .connection_closed,
+            .pool_cleared,
+            .checkout_started,
+            .connection_created,
+            .connection_ready,
+            .checked_out,
+            .checked_in,
+        },
+        collector.kinds[0..collector.len],
+    );
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63004) });
+}
+
 test "43 - timeoutMS bounds a saturated pool checkout" {
     const database = "bongo_cmap_wait";
     const collection = "cards";
@@ -119,10 +221,13 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
     );
     defer client.deinit();
 
-    // Hold the only pooled connection. The next operation cannot create a
-    // second connection and must leave the CMAP wait queue at timeoutMS.
+    // Hold the only pooled connection before monitoring starts so the event
+    // sequence covers only the saturated checkout being tested.
     var transaction = try client.beginTransaction(.{});
     defer transaction.deinit();
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
 
     try std.testing.expectError(
         error.WaitQueueTimeout,
@@ -130,6 +235,12 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
             ._id = @as(i64, 63003),
             .value = @as(i32, 3),
         }),
+    );
+
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .checkout_started, .checkout_failed },
+        collector.kinds[0..collector.len],
     );
 
     const snapshot = client.pool.stats();
