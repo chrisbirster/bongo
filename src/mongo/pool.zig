@@ -55,9 +55,6 @@ pub const Pool = struct {
         return self;
     }
 
-    /// Attach or replace a synchronous CMAP monitor. Attaching after client
-    /// construction emits a synthetic `pool_opened` event for the current pool
-    /// generation so the observer always has a lifecycle starting point.
     pub fn setMonitor(self: *Pool, monitor: monitor_mod.Monitor) void {
         self.monitor = monitor;
         self.closed_emitted = false;
@@ -119,9 +116,6 @@ pub const Pool = struct {
         return self.core.generationSnapshot();
     }
 
-    /// Begin or continue one logical application checkout. RuntimeClient calls
-    /// `take` first on every checkout loop, so a waiter/retry keeps one start
-    /// event until it either succeeds or records a terminal failure.
     pub fn take(self: *Pool) ?Handle {
         if (checkout_pool != self) {
             checkout_pool = self;
@@ -162,7 +156,7 @@ pub const Pool = struct {
             const reason: ConnectionClosedReason = switch (err) {
                 error.PoolCleared => .pool_cleared,
                 error.PoolClosed => .pool_closed,
-                else => .error,
+                else => .connection_error,
             };
             self.emit(.{ .connection_closed = .{
                 .generation = permit.generation,
@@ -186,8 +180,6 @@ pub const Pool = struct {
             self.emit(.{ .checked_out = .{ .generation = permit.generation } });
             checkout_pool = null;
         } else {
-            // Initial client connection and minPoolSize warming become idle
-            // without ever being application checkouts.
             suppress_next_checkin_pool = self;
         }
     }
@@ -197,7 +189,7 @@ pub const Pool = struct {
         self.emit(.{ .connection_closed = .{
             .generation = permit.generation,
             .count = 1,
-            .reason = .error,
+            .reason = .connection_error,
         } });
         if (checkout_pool == self) self.checkoutFailed(.connection_error);
         if (maintenance_pool == self) maintenance_pool = null;
@@ -254,7 +246,7 @@ pub const Pool = struct {
         const reason: ConnectionClosedReason = switch (before.state) {
             .paused => .pool_cleared,
             .closing, .closed => .pool_closed,
-            .ready => .error,
+            .ready => .connection_error,
         };
         self.emit(.{ .connection_closed = .{
             .generation = before.generation,
@@ -281,8 +273,6 @@ pub const Pool = struct {
         return self.core.checkedOutCount();
     }
 
-    /// Used by the deadline wait helper to close one logical checkout exactly
-    /// once when timeout/clear/shutdown wins the wait race.
     pub fn checkoutFailed(self: *Pool, reason: CheckoutFailedReason) void {
         if (checkout_pool != self) return;
         const generation = self.core.generationSnapshot();
