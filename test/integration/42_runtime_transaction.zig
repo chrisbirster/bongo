@@ -287,3 +287,99 @@ test "42 - shared RuntimeClient supports concurrent operations" {
         }
     }
 }
+
+test "42 - pool wait queue resumes when a transport is returned" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const database = "bongo_wait_queue";
+    const collection = "cards";
+    const id: i64 = 61001;
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27019/bongo_wait_queue?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    defer client.deinit();
+    _ = try client.deleteOne(database, collection, .{ ._id = id });
+
+    var transaction = try client.beginTransaction(.{});
+    defer transaction.deinit();
+
+    const Runner = struct {
+        client: *bongo.RuntimeClient,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            _ = self.client.insertOne(
+                "bongo_wait_queue",
+                "cards",
+                .{ ._id = @as(i64, 61001), .value = @as(i32, 1) },
+            ) catch |err| {
+                self.failure = err;
+            };
+        }
+    };
+
+    var runner: Runner = .{ .client = &client };
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&runner});
+    while (client.pool.stats().waiters == 0) {
+        std.Thread.yield() catch {};
+    }
+
+    try transaction.commit();
+    thread.join();
+    if (runner.failure) |err| return err;
+
+    _ = try client.deleteOne(database, collection, .{ ._id = id });
+}
+
+test "42 - RuntimeClient shutdown wakes blocked pool checkouts" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27019/bongo_shutdown?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    var cleaned = false;
+    defer if (!cleaned) client.deinit();
+
+    var transaction = try client.beginTransaction(.{});
+
+    const Runner = struct {
+        client: *bongo.RuntimeClient,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            _ = self.client.insertOne(
+                "bongo_shutdown",
+                "cards",
+                .{ ._id = @as(i64, 62001) },
+            ) catch |err| {
+                self.failure = err;
+            };
+        }
+    };
+
+    var runner: Runner = .{ .client = &client };
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&runner});
+    while (client.pool.stats().waiters == 0) {
+        std.Thread.yield() catch {};
+    }
+
+    client.requestShutdown();
+    thread.join();
+    try std.testing.expectEqual(error.PoolClosed, runner.failure.?);
+
+    transaction.deinit();
+    try client.deinitChecked();
+    cleaned = true;
+}

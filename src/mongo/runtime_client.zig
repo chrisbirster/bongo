@@ -97,7 +97,10 @@ pub const RuntimeClient = struct {
         var selected = try self.openWritableTransport();
         errdefer selected.deinit();
         try self.pool.noteCreated();
-        try self.pool.put(selected);
+        self.pool.put(selected) catch |err| {
+            self.pool.noteDiscarded();
+            return err;
+        };
         return self;
     }
 
@@ -123,6 +126,16 @@ pub const RuntimeClient = struct {
         self.pool.deinit();
         self.connection_options.deinit();
         self.* = undefined;
+    }
+
+    /// Stop accepting new work and wake any operations blocked in the pool wait
+    /// queue. Existing operations/handles retain ownership until they unwind;
+    /// call `deinitChecked` after they have completed.
+    pub fn requestShutdown(self: *RuntimeClient) void {
+        self.state_mutex.lockUncancelable(self.io);
+        self.closing = true;
+        self.state_mutex.unlock(self.io);
+        self.pool.close();
     }
 
     pub fn databaseName(self: RuntimeClient) []const u8 {
@@ -372,12 +385,27 @@ pub const RuntimeClient = struct {
     }
 
     fn checkout(self: *RuntimeClient) !Transport {
-        if (self.pool.take()) |transport| return transport;
-        if (!self.pool.canCreate()) return error.PoolExhausted;
-        var transport = try self.openSelectedTransport();
-        errdefer transport.deinit();
-        try self.pool.noteCreated();
-        return transport;
+        while (true) {
+            if (self.pool.take()) |transport| return transport;
+
+            if (self.pool.canCreate()) {
+                var transport = try self.openSelectedTransport();
+                self.pool.noteCreated() catch |err| switch (err) {
+                    error.PoolExhausted => {
+                        transport.deinit();
+                        try self.pool.waitForAvailability();
+                        continue;
+                    },
+                    else => {
+                        transport.deinit();
+                        return err;
+                    },
+                };
+                return transport;
+            }
+
+            try self.pool.waitForAvailability();
+        }
     }
 
     /// Return a healthy checked-out transport to the idle pool. This method
