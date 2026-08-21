@@ -6,7 +6,7 @@
 pub const ConnectionClosedReason = enum {
     idle,
     stale,
-    error,
+    connection_error,
     pool_closed,
     pool_cleared,
 };
