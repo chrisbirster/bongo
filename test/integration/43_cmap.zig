@@ -106,3 +106,35 @@ test "43 - maxPoolSize zero is unlimited" {
     try std.testing.expectEqual(@as(usize, 3), snapshot.total);
     try std.testing.expectEqual(@as(usize, 3), snapshot.checked_out);
 }
+
+test "43 - timeoutMS bounds a saturated pool checkout" {
+    const database = "bongo_cmap_wait";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_wait?replicaSet=rs0&timeoutMS=200",
+        .{ .max_pool_size = 1 },
+    );
+    defer client.deinit();
+
+    // Hold the only pooled connection. The next operation cannot create a
+    // second connection and must leave the CMAP wait queue at timeoutMS.
+    var transaction = try client.beginTransaction(.{});
+    defer transaction.deinit();
+
+    try std.testing.expectError(
+        error.WaitQueueTimeout,
+        client.insertOne(database, collection, .{
+            ._id = @as(i64, 63003),
+            .value = @as(i32, 3),
+        }),
+    );
+
+    const snapshot = client.pool.stats();
+    try std.testing.expectEqual(@as(usize, 1), snapshot.total);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
+}
