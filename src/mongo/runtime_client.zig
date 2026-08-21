@@ -154,6 +154,9 @@ pub const RuntimeClient = struct {
         self.* = undefined;
     }
 
+    /// Stop accepting new work and wake any operations blocked in the pool wait
+    /// queue. Existing operations/handles retain ownership until they unwind;
+    /// call `deinitChecked` after they have completed.
     pub fn requestShutdown(self: *RuntimeClient) void {
         self.state_mutex.lockUncancelable(self.io);
         self.closing = true;
@@ -518,6 +521,9 @@ pub const RuntimeClient = struct {
         self.active_handles -= 1;
     }
 
+    /// A request error can leave a stream partially written or with an unread
+    /// response still pending. Never return such a transport to the pool,
+    /// including after a client-side operation timeout.
     fn requestCheckedOut(
         self: *RuntimeClient,
         transport: *?PoolHandle,
@@ -756,6 +762,7 @@ pub const Cursor = struct {
         self.close() catch {};
         self.client.allocator.free(self.response_bytes);
         self.client.allocator.free(self.database_name);
+        self.client.allocator.free(self.collection_name);
         self.client.releaseTransport(&self.transport);
         self.client.releaseHandle();
         self.* = undefined;
