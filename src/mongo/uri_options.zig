@@ -79,6 +79,7 @@ pub const Options = struct {
     min_pool_size: ?u32 = null,
     max_pool_size: ?u32 = null,
     max_connecting: ?u32 = null,
+    max_idle_time_ms: ?u64 = null,
 
     compressors: []Compressor,
 
@@ -124,6 +125,7 @@ const Seen = struct {
     min_pool_size: bool = false,
     max_pool_size: bool = false,
     max_connecting: bool = false,
+    max_idle_time_ms: bool = false,
     compressors: bool = false,
     srv_service_name: bool = false,
     srv_max_hosts: bool = false,
@@ -271,6 +273,9 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             const value = try parseU32Option(allocator, raw_option.value);
             if (value == 0) return error.InvalidOptionValue;
             result.max_connecting = value;
+        } else if (optionName(name, "maxIdleTimeMS")) {
+            try markSeen(&seen.max_idle_time_ms);
+            result.max_idle_time_ms = try parseU64Option(allocator, raw_option.value);
         } else if (optionName(name, "compressors")) {
             try markSeen(&seen.compressors);
             const decoded = try decodeComponent(allocator, raw_option.value);
@@ -284,8 +289,6 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
             try markSeen(&seen.srv_max_hosts);
             result.srv_max_hosts = try parseU32Option(allocator, raw_option.value);
         }
-        // Unknown options are intentionally ignored. Bongo does not yet have
-        // a logging subsystem to emit the specification's recommended warning.
     }
 
     try validateTlsConflicts(result);
@@ -552,7 +555,7 @@ test "typed option values are percent decoded before parsing" {
 test "parses booleans integers pool sizing compressors and auth mechanism" {
     var options = try parse(
         std.testing.allocator,
-        "mongodb://alice:secret@localhost/admin?authMechanism=SCRAM-SHA-256&tls=true&directConnection=true&connectTimeoutMS=5000&socketTimeoutMS=6000&timeoutMS=7000&minPoolSize=2&maxPoolSize=10&maxConnecting=3&compressors=zlib,zstd",
+        "mongodb://alice:secret@localhost/admin?authMechanism=SCRAM-SHA-256&tls=true&directConnection=true&connectTimeoutMS=5000&socketTimeoutMS=6000&timeoutMS=7000&minPoolSize=2&maxPoolSize=10&maxConnecting=3&maxIdleTimeMS=8000&compressors=zlib,zstd",
     );
     defer options.deinit();
 
@@ -565,6 +568,7 @@ test "parses booleans integers pool sizing compressors and auth mechanism" {
     try std.testing.expectEqual(@as(u32, 2), options.min_pool_size.?);
     try std.testing.expectEqual(@as(u32, 10), options.max_pool_size.?);
     try std.testing.expectEqual(@as(u32, 3), options.max_connecting.?);
+    try std.testing.expectEqual(@as(u64, 8000), options.max_idle_time_ms.?);
     try std.testing.expectEqualSlices(Compressor, &.{ .zlib, .zstd }, options.compressors);
 }
 
