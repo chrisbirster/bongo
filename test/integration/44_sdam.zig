@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const bongo = @import("bongo");
 
 const ports = [_]u16{ 27021, 27022, 27023 };
@@ -48,6 +49,73 @@ test "44 - discovers replica set and routes secondary reads" {
     }
     try std.testing.expect(found_on_secondary);
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 64001) });
+}
+
+test "44 - shared RuntimeClient survives concurrent SDAM selection" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27021/bongo_sdam_stress?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
+        .{ .max_pool_size = 8 },
+    );
+    defer client.deinit();
+
+    const Runner = struct {
+        client: *bongo.RuntimeClient,
+        worker: usize,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            for (0..8) |iteration| {
+                const id: i64 = @intCast(64500 + self.worker * 100 + iteration);
+                _ = self.client.deleteOne("bongo_sdam_stress", "cards", .{ ._id = id }) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                _ = self.client.insertOne(
+                    "bongo_sdam_stress",
+                    "cards",
+                    .{ ._id = id, .worker = @as(i64, @intCast(self.worker)) },
+                ) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                var cursor = self.client.findWithReadPreference(
+                    "bongo_sdam_stress",
+                    "cards",
+                    .{},
+                    .{ .limit = @as(i64, 1) },
+                    .{ .mode = .nearest },
+                ) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                _ = cursor.next() catch |err| {
+                    cursor.deinit();
+                    self.failure = err;
+                    return;
+                };
+                cursor.deinit();
+            }
+        }
+    };
+
+    var runners = [_]Runner{
+        .{ .client = &client, .worker = 0 },
+        .{ .client = &client, .worker = 1 },
+        .{ .client = &client, .worker = 2 },
+        .{ .client = &client, .worker = 3 },
+    };
+    var threads: [runners.len]std.Thread = undefined;
+    for (&threads, &runners) |*thread, *runner| {
+        thread.* = try std.Thread.spawn(.{}, Runner.run, .{runner});
+    }
+    for (threads) |thread| thread.join();
+    for (runners) |runner| {
+        if (runner.failure) |err| return err;
+    }
 }
 
 test "44 - primary stepdown clears pool and reselects without recreating client" {
@@ -125,7 +193,10 @@ fn findPrimaryPort(io: std.Io, allocator: std.mem.Allocator) !u16 {
         const message = bongo.mongo.op_msg.decode(response) catch continue;
         const body = message.body() catch continue;
         const value = (bongo.bson.Reader.get(body, "isWritablePrimary") catch null) orelse continue;
-        if (value == .boolean and value.boolean) return port;
+        switch (value) {
+            .boolean => |is_primary| if (is_primary) return port,
+            else => {},
+        }
     }
     return error.NoPrimary;
 }
