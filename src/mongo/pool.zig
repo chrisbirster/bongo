@@ -12,6 +12,7 @@ pub const Error = error{
     ConnectLimitReached,
     InvalidMinSize,
     InvalidMaxConnecting,
+    InvalidMaxIdleTime,
 };
 
 pub const State = enum {
@@ -26,13 +27,16 @@ pub const Options = struct {
     /// CMAP: 0 means unlimited; otherwise the cap includes pending + idle + in-use.
     max_size: usize = 100,
     max_connecting: usize = 2,
+    /// CMAP: 0 disables idle expiry.
+    max_idle_time_ms: u64 = 0,
 };
 
 /// Checked-out transport together with the pool generation that created it.
-/// A handle from an older generation must never be returned to the idle list.
+/// `idle_since` is populated only while the handle is available in the pool.
 pub const Handle = struct {
     transport: Transport,
     generation: u64,
+    idle_since: ?Io.Clock.Timestamp = null,
 };
 
 /// Reservation acquired before opening a physical connection. Reserving first
@@ -48,6 +52,7 @@ pub const Stats = struct {
     min_size: usize,
     max_size: usize,
     max_connecting: usize,
+    max_idle_time_ms: u64,
     total: usize,
     connecting: usize,
     idle: usize,
@@ -56,13 +61,15 @@ pub const Stats = struct {
 };
 
 /// CMAP-oriented reusable transport pool with explicit lifecycle, generation
-/// clearing, controlled connection establishment, and a Zig 0.16 Io wait queue.
+/// clearing, controlled connection establishment, idle expiry, and a Zig 0.16
+/// Io wait queue.
 pub const Pool = struct {
     allocator: Allocator,
     io: Io,
     min_size: usize,
     max_size: usize,
     max_connecting: usize,
+    max_idle_time_ms: u64,
     mutex: Io.Mutex = Io.Mutex.init,
     condition: Io.Condition = std.mem.zeroes(Io.Condition),
     state: State = .paused,
@@ -82,17 +89,19 @@ pub const Pool = struct {
             return error.InvalidMinSize;
         }
         if (options.max_connecting == 0) return error.InvalidMaxConnecting;
+        if (options.max_idle_time_ms > std.math.maxInt(i64)) {
+            return error.InvalidMaxIdleTime;
+        }
         return .{
             .allocator = allocator,
             .io = io,
             .min_size = options.min_size,
             .max_size = options.max_size,
             .max_connecting = options.max_connecting,
+            .max_idle_time_ms = options.max_idle_time_ms,
         };
     }
 
-    /// Transition a paused pool to ready after SDAM has determined its server
-    /// may service operations. Idempotent for an already-ready pool.
     pub fn ready(self: *Pool) Error!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -117,9 +126,6 @@ pub const Pool = struct {
         self.* = undefined;
     }
 
-    /// Begin pool shutdown. Idle transports are closed immediately and all
-    /// waiters are woken. Checked-out transports and in-flight creators finish
-    /// their ownership paths before the pool reaches `.closed`.
     pub fn close(self: *Pool) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -161,17 +167,21 @@ pub const Pool = struct {
         return self.generation;
     }
 
+    /// CMAP checkout removes perished idle connections before returning a live
+    /// handle. Idle expiry is evaluated with the monotonic `.awake` clock.
     pub fn take(self: *Pool) ?Handle {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        if (self.state != .ready or self.idle.items.len == 0) return null;
-        const handle = self.idle.pop().?;
+        if (self.state != .ready) return null;
+        _ = self.pruneIdleLocked();
+        if (self.idle.items.len == 0) return null;
+        var handle = self.idle.pop().?;
         std.debug.assert(handle.generation == self.generation);
+        handle.idle_since = null;
         self.checked_out += 1;
         return handle;
     }
 
-    /// Reserve capacity before opening a new physical connection.
     pub fn tryStartCreate(self: *Pool) Error!CreatePermit {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -187,7 +197,6 @@ pub const Pool = struct {
         };
     }
 
-    /// Convert a creation reservation into a checked-out live connection.
     pub fn finishCreate(self: *Pool, permit: CreatePermit) Error!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -220,7 +229,6 @@ pub const Pool = struct {
         self.condition.signal(self.io);
     }
 
-    /// Release a reservation when physical connection creation fails.
     pub fn cancelCreate(self: *Pool, permit: CreatePermit) void {
         _ = permit;
         self.mutex.lockUncancelable(self.io);
@@ -241,14 +249,23 @@ pub const Pool = struct {
         return self.canStartCreateLocked();
     }
 
+    /// Prune expired idle connections and report whether the pool is below its
+    /// configured minimum. RuntimeClient uses this to replenish after check-in.
     pub fn needsMinConnections(self: *Pool) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        return self.state == .ready and self.created + self.connecting < self.min_size;
+        if (self.state != .ready) return false;
+        _ = self.pruneIdleLocked();
+        return self.created + self.connecting < self.min_size;
     }
 
-    /// Block while no idle connection is available and creation cannot start.
-    /// Clearing the pool evicts waiters with PoolCleared as required by CMAP.
+    /// Explicit maintenance hook for the future SDAM monitor cadence.
+    pub fn pruneIdle(self: *Pool) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.pruneIdleLocked();
+    }
+
     pub fn waitForAvailability(self: *Pool) Error!void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -258,6 +275,7 @@ pub const Pool = struct {
             .closing, .closed => return error.PoolClosed,
             .ready => {},
         }
+        _ = self.pruneIdleLocked();
         if (self.idle.items.len != 0 or self.canStartCreateLocked()) return;
 
         self.waiters += 1;
@@ -268,6 +286,7 @@ pub const Pool = struct {
             !self.canStartCreateLocked())
         {
             self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.state == .ready) _ = self.pruneIdleLocked();
         }
 
         return switch (self.state) {
@@ -277,10 +296,7 @@ pub const Pool = struct {
         };
     }
 
-    /// Return a healthy checked-out transport to the idle pool. Handles from a
-    /// cleared generation or a paused pool are rejected so RuntimeClient can
-    /// destroy them.
-    pub fn put(self: *Pool, handle: Handle) !void {
+    pub fn put(self: *Pool, handle_value: Handle) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         switch (self.state) {
@@ -288,15 +304,15 @@ pub const Pool = struct {
             .closing, .closed => return error.PoolClosed,
             .ready => {},
         }
-        if (handle.generation != self.generation) return error.PoolCleared;
+        if (handle_value.generation != self.generation) return error.PoolCleared;
         std.debug.assert(self.checked_out > 0);
+        var handle = handle_value;
+        handle.idle_since = Io.Clock.Timestamp.now(self.io, .awake);
         try self.idle.append(self.allocator, handle);
         self.checked_out -= 1;
         self.condition.signal(self.io);
     }
 
-    /// Account for permanently discarding a checked-out connection after a
-    /// transport failure, stale-generation rejection, or shutdown.
     pub fn noteDiscarded(self: *Pool) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -321,6 +337,7 @@ pub const Pool = struct {
             .min_size = self.min_size,
             .max_size = self.max_size,
             .max_connecting = self.max_connecting,
+            .max_idle_time_ms = self.max_idle_time_ms,
             .total = self.created,
             .connecting = self.connecting,
             .idle = self.idle.items.len,
@@ -339,6 +356,43 @@ pub const Pool = struct {
 
     pub fn checkedOutCount(self: *Pool) usize {
         return self.stats().checked_out;
+    }
+
+    fn pruneIdleLocked(self: *Pool) usize {
+        if (self.max_idle_time_ms == 0 or self.idle.items.len == 0) return 0;
+        const now = Io.Clock.Timestamp.now(self.io, .awake);
+        var write_index: usize = 0;
+        var removed: usize = 0;
+        for (self.idle.items) |handle| {
+            if (self.idleExpiredLocked(handle, now)) {
+                var doomed = handle.transport;
+                doomed.deinit();
+                std.debug.assert(self.created > 0);
+                self.created -= 1;
+                removed += 1;
+            } else {
+                self.idle.items[write_index] = handle;
+                write_index += 1;
+            }
+        }
+        self.idle.items = self.idle.items[0..write_index];
+        if (removed > 0) self.condition.broadcast(self.io);
+        return removed;
+    }
+
+    fn idleExpiredLocked(
+        self: *Pool,
+        handle: Handle,
+        now: Io.Clock.Timestamp,
+    ) bool {
+        const idle_since = handle.idle_since orelse return false;
+        const milliseconds: i64 = @intCast(self.max_idle_time_ms);
+        const duration: Io.Clock.Duration = .{
+            .raw = Io.Duration.fromMilliseconds(milliseconds),
+            .clock = .awake,
+        };
+        const deadline = idle_since.addDuration(duration);
+        return !now.compare(.lt, deadline);
     }
 
     fn underMaxLocked(self: *Pool) bool {
@@ -361,7 +415,7 @@ pub const Pool = struct {
     }
 };
 
-test "pool validates sizing options and supports unlimited maxPoolSize" {
+test "pool validates sizing and idle options" {
     var unlimited = try Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
         .max_size = 0,
     });
@@ -380,6 +434,12 @@ test "pool validates sizing options and supports unlimited maxPoolSize" {
         error.InvalidMaxConnecting,
         Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
             .max_connecting = 0,
+        }),
+    );
+    try std.testing.expectError(
+        error.InvalidMaxIdleTime,
+        Pool.initWithOptions(std.testing.io, std.testing.allocator, .{
+            .max_idle_time_ms = @as(u64, std.math.maxInt(i64)) + 1,
         }),
     );
 }
