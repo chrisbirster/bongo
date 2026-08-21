@@ -82,6 +82,23 @@ pub fn build(b: *std.Build) void {
     );
     runtime_integration_test_step.dependOn(&run_runtime_integration_tests.step);
 
+    const cmap_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/integration/43_cmap.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "bongo", .module = mod },
+            },
+        }),
+    });
+    const run_cmap_integration_tests = b.addRunArtifact(cmap_integration_tests);
+    const cmap_integration_test_step = b.step(
+        "cmap-integration-test",
+        "Run CMAP pool lifecycle integration tests",
+    );
+    cmap_integration_test_step.dependOn(&run_cmap_integration_tests.step);
+
     const spec_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/spec.zig"),
