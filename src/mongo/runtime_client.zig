@@ -8,7 +8,9 @@ const find_and_modify = @import("find_and_modify.zig");
 const find_options = @import("find_options.zig");
 const index_admin = @import("index_admin.zig");
 const op_msg = @import("op_msg.zig");
-const Pool = @import("pool.zig").Pool;
+const pool_mod = @import("pool.zig");
+const Pool = pool_mod.Pool;
+const PoolHandle = pool_mod.Handle;
 const session_mod = @import("session.zig");
 const srv = @import("srv.zig");
 const TlsConnection = @import("tls_connection.zig").TlsConnection;
@@ -94,10 +96,14 @@ pub const RuntimeClient = struct {
             .pool = pool,
         };
 
+        const generation = self.pool.generationSnapshot();
         var selected = try self.openWritableTransport();
         errdefer selected.deinit();
-        try self.pool.noteCreated();
-        self.pool.put(selected) catch |err| {
+        try self.pool.noteCreated(generation);
+        self.pool.put(.{
+            .transport = selected,
+            .generation = generation,
+        }) catch |err| {
             self.pool.noteDiscarded();
             return err;
         };
@@ -151,7 +157,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeInsertOne(
@@ -178,7 +184,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeUpdate(
@@ -206,7 +212,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try crud.encodeDeleteOne(
@@ -232,7 +238,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         errdefer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try find_options.encodeFind(
@@ -292,7 +298,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try op_msg.encodeCommand(
@@ -329,7 +335,7 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
         try validateNamespace(database_name, collection_name);
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         defer self.releaseTransport(&transport);
         const request_id = self.takeRequestId();
         const request = try index_admin.encodeCreateIndex(
@@ -356,7 +362,7 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         if (!self.supports_sessions) return error.SessionsUnsupported;
         if (!self.supports_transactions) return error.TransactionsUnsupported;
-        var transport: ?Transport = try self.checkout();
+        var transport: ?PoolHandle = try self.checkout();
         errdefer self.releaseTransport(&transport);
         var session = session_mod.Session.init(self.io);
         try transaction_ops.begin(&session, options);
@@ -384,16 +390,21 @@ pub const RuntimeClient = struct {
         self.active_operations -= 1;
     }
 
-    fn checkout(self: *RuntimeClient) !Transport {
+    fn checkout(self: *RuntimeClient) !PoolHandle {
         while (true) {
             if (self.pool.take()) |transport| return transport;
 
             if (self.pool.canCreate()) {
+                const generation = self.pool.generationSnapshot();
                 var transport = try self.openSelectedTransport();
-                self.pool.noteCreated() catch |err| switch (err) {
+                self.pool.noteCreated(generation) catch |err| switch (err) {
                     error.PoolExhausted => {
                         transport.deinit();
                         try self.pool.waitForAvailability();
+                        continue;
+                    },
+                    error.PoolCleared => {
+                        transport.deinit();
                         continue;
                     },
                     else => {
@@ -401,7 +412,10 @@ pub const RuntimeClient = struct {
                         return err;
                     },
                 };
-                return transport;
+                return .{
+                    .transport = transport,
+                    .generation = generation,
+                };
             }
 
             try self.pool.waitForAvailability();
@@ -409,27 +423,27 @@ pub const RuntimeClient = struct {
     }
 
     /// Return a healthy checked-out transport to the idle pool. This method
-    /// owns cleanup if growing the idle list fails, so callers must not attempt
-    /// a second deinit after calling it.
-    fn checkin(self: *RuntimeClient, transport: Transport) void {
+    /// owns cleanup if growing the idle list fails or the handle was invalidated
+    /// by a concurrent pool clear.
+    fn checkin(self: *RuntimeClient, transport: PoolHandle) void {
         self.pool.put(transport) catch {
             self.discard(transport);
         };
     }
 
-    fn releaseTransport(self: *RuntimeClient, transport: *?Transport) void {
+    fn releaseTransport(self: *RuntimeClient, transport: *?PoolHandle) void {
         const owned = transport.* orelse return;
         transport.* = null;
         self.checkin(owned);
     }
 
-    fn discard(self: *RuntimeClient, transport: Transport) void {
-        var doomed = transport;
+    fn discard(self: *RuntimeClient, transport: PoolHandle) void {
+        var doomed = transport.transport;
         doomed.deinit();
         self.pool.noteDiscarded();
     }
 
-    fn discardTransport(self: *RuntimeClient, transport: *?Transport) void {
+    fn discardTransport(self: *RuntimeClient, transport: *?PoolHandle) void {
         const owned = transport.* orelse return;
         transport.* = null;
         self.discard(owned);
@@ -454,11 +468,11 @@ pub const RuntimeClient = struct {
     /// including after a client-side operation timeout.
     fn requestCheckedOut(
         self: *RuntimeClient,
-        transport: *?Transport,
+        transport: *?PoolHandle,
         request_bytes: []const u8,
     ) ![]u8 {
         if (transport.*) |*owned| {
-            return owned.request(self.allocator, request_bytes) catch |err| {
+            return owned.transport.request(self.allocator, request_bytes) catch |err| {
                 self.discardTransport(transport);
                 return err;
             };
@@ -603,7 +617,7 @@ pub const RuntimeClient = struct {
 
 pub const Cursor = struct {
     client: *RuntimeClient,
-    transport: ?Transport,
+    transport: ?PoolHandle,
     database_name: []u8,
     collection_name: []u8,
     response_bytes: []u8,
@@ -613,7 +627,7 @@ pub const Cursor = struct {
 
     fn init(
         client: *RuntimeClient,
-        transport: Transport,
+        transport: PoolHandle,
         response_bytes: []u8,
         expected_response_to: i32,
         database_name: []const u8,
@@ -738,7 +752,7 @@ pub const Cursor = struct {
 
 pub const Transaction = struct {
     client: *RuntimeClient,
-    transport: ?Transport,
+    transport: ?PoolHandle,
     session: session_mod.Session,
     finished: bool = false,
 
@@ -748,7 +762,7 @@ pub const Transaction = struct {
         collection_name: []const u8,
         document: anytype,
     ) !crud.InsertOneResult {
-        const transport = if (self.transport) |*owned| owned else
+        const transport = if (self.transport) |*owned| &owned.transport else
             return error.InvalidTransactionState;
         var transport_failed = false;
         return transaction_ops.insertOne(
@@ -774,7 +788,7 @@ pub const Transaction = struct {
         update: anytype,
         upsert: bool,
     ) !crud.UpdateResult {
-        const transport = if (self.transport) |*owned| owned else
+        const transport = if (self.transport) |*owned| &owned.transport else
             return error.InvalidTransactionState;
         var transport_failed = false;
         return transaction_ops.updateOne(
@@ -795,7 +809,7 @@ pub const Transaction = struct {
     }
 
     pub fn commit(self: *Transaction) !void {
-        const transport = if (self.transport) |*owned| owned else
+        const transport = if (self.transport) |*owned| &owned.transport else
             return error.InvalidTransactionState;
         var transport_failed = false;
         transaction_ops.commit(
@@ -813,7 +827,7 @@ pub const Transaction = struct {
     }
 
     pub fn abort(self: *Transaction) !void {
-        const transport = if (self.transport) |*owned| owned else
+        const transport = if (self.transport) |*owned| &owned.transport else
             return error.InvalidTransactionState;
         var transport_failed = false;
         transaction_ops.abort(
