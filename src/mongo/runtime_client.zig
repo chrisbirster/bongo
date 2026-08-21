@@ -40,7 +40,9 @@ pub const Error = error{
 };
 
 pub const Options = struct {
+    min_pool_size: usize = 0,
     max_pool_size: usize = 4,
+    max_connecting: usize = 2,
 };
 
 pub const OwnedDocument = struct {
@@ -86,7 +88,11 @@ pub const RuntimeClient = struct {
             try uri_options.parse(allocator, connection_string);
         errdefer parsed.deinit();
 
-        var pool = try Pool.init(io, allocator, options.max_pool_size);
+        var pool = try Pool.initWithOptions(io, allocator, .{
+            .min_size = options.min_pool_size,
+            .max_size = options.max_pool_size,
+            .max_connecting = options.max_connecting,
+        });
         errdefer pool.deinit();
 
         var self: RuntimeClient = .{
@@ -96,17 +102,22 @@ pub const RuntimeClient = struct {
             .pool = pool,
         };
 
-        const generation = self.pool.generationSnapshot();
-        var selected = try self.openWritableTransport();
+        const permit = try self.pool.tryStartCreate();
+        var selected = self.openWritableTransport() catch |err| {
+            self.pool.cancelCreate(permit);
+            return err;
+        };
         errdefer selected.deinit();
-        try self.pool.noteCreated(generation);
+        try self.pool.finishCreate(permit);
         self.pool.put(.{
             .transport = selected,
-            .generation = generation,
+            .generation = permit.generation,
         }) catch |err| {
             self.pool.noteDiscarded();
             return err;
         };
+
+        try self.ensureMinPool();
         return self;
     }
 
@@ -394,31 +405,67 @@ pub const RuntimeClient = struct {
         while (true) {
             if (self.pool.take()) |transport| return transport;
 
-            if (self.pool.canCreate()) {
-                const generation = self.pool.generationSnapshot();
-                var transport = try self.openSelectedTransport();
-                self.pool.noteCreated(generation) catch |err| switch (err) {
-                    error.PoolExhausted => {
-                        transport.deinit();
-                        try self.pool.waitForAvailability();
-                        continue;
-                    },
-                    error.PoolCleared => {
-                        transport.deinit();
-                        continue;
-                    },
-                    else => {
-                        transport.deinit();
-                        return err;
-                    },
-                };
-                return .{
-                    .transport = transport,
-                    .generation = generation,
-                };
-            }
+            const permit = self.pool.tryStartCreate() catch |err| switch (err) {
+                error.PoolExhausted, error.ConnectLimitReached => {
+                    try self.pool.waitForAvailability();
+                    continue;
+                },
+                else => return err,
+            };
 
-            try self.pool.waitForAvailability();
+            var transport = self.openSelectedTransport() catch |err| {
+                self.pool.cancelCreate(permit);
+                return err;
+            };
+            self.pool.finishCreate(permit) catch |err| switch (err) {
+                error.PoolCleared => {
+                    transport.deinit();
+                    continue;
+                },
+                error.PoolExhausted => {
+                    transport.deinit();
+                    try self.pool.waitForAvailability();
+                    continue;
+                },
+                else => {
+                    transport.deinit();
+                    return err;
+                },
+            };
+            return .{
+                .transport = transport,
+                .generation = permit.generation,
+            };
+        }
+    }
+
+    fn ensureMinPool(self: *RuntimeClient) !void {
+        while (self.pool.needsMinConnections()) {
+            const permit = self.pool.tryStartCreate() catch |err| switch (err) {
+                error.PoolExhausted, error.ConnectLimitReached => {
+                    try self.pool.waitForAvailability();
+                    continue;
+                },
+                else => return err,
+            };
+
+            var transport = self.openSelectedTransport() catch |err| {
+                self.pool.cancelCreate(permit);
+                return err;
+            };
+            self.pool.finishCreate(permit) catch |err| {
+                transport.deinit();
+                if (err == error.PoolCleared) continue;
+                return err;
+            };
+            const handle: PoolHandle = .{
+                .transport = transport,
+                .generation = permit.generation,
+            };
+            self.pool.put(handle) catch |err| {
+                self.discard(handle);
+                return err;
+            };
         }
     }
 
