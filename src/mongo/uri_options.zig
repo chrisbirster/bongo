@@ -75,6 +75,11 @@ pub const Options = struct {
     socket_timeout_ms: ?u32 = null,
     timeout_ms: ?u64 = null,
 
+    // CMAP connection-pool controls. A max_pool_size of zero means unlimited.
+    min_pool_size: ?u32 = null,
+    max_pool_size: ?u32 = null,
+    max_connecting: ?u32 = null,
+
     compressors: []Compressor,
 
     srv_service_name: ?[]u8 = null,
@@ -116,6 +121,9 @@ const Seen = struct {
     connect_timeout_ms: bool = false,
     socket_timeout_ms: bool = false,
     timeout_ms: bool = false,
+    min_pool_size: bool = false,
+    max_pool_size: bool = false,
+    max_connecting: bool = false,
     compressors: bool = false,
     srv_service_name: bool = false,
     srv_max_hosts: bool = false,
@@ -252,6 +260,17 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
         } else if (optionName(name, "timeoutMS")) {
             try markSeen(&seen.timeout_ms);
             result.timeout_ms = try parseU64Option(allocator, raw_option.value);
+        } else if (optionName(name, "minPoolSize")) {
+            try markSeen(&seen.min_pool_size);
+            result.min_pool_size = try parseU32Option(allocator, raw_option.value);
+        } else if (optionName(name, "maxPoolSize")) {
+            try markSeen(&seen.max_pool_size);
+            result.max_pool_size = try parseU32Option(allocator, raw_option.value);
+        } else if (optionName(name, "maxConnecting")) {
+            try markSeen(&seen.max_connecting);
+            const value = try parseU32Option(allocator, raw_option.value);
+            if (value == 0) return error.InvalidOptionValue;
+            result.max_connecting = value;
         } else if (optionName(name, "compressors")) {
             try markSeen(&seen.compressors);
             const decoded = try decodeComponent(allocator, raw_option.value);
@@ -271,6 +290,7 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
 
     try validateTlsConflicts(result);
     try validateTopologyOptions(result);
+    try validatePoolOptions(result);
     try validateAuthentication(allocator, &result);
 
     if (result.srv_service_name != null or result.srv_max_hosts != null) {
@@ -332,6 +352,16 @@ fn validateTopologyOptions(options: Options) Error!void {
             options.replica_set != null)
         {
             return error.IncompatibleOptions;
+        }
+    }
+}
+
+fn validatePoolOptions(options: Options) Error!void {
+    if (options.max_pool_size) |max_size| {
+        if (max_size > 0 and options.min_pool_size != null and
+            options.min_pool_size.? > max_size)
+        {
+            return error.InvalidOptionValue;
         }
     }
 }
@@ -519,10 +549,10 @@ test "typed option values are percent decoded before parsing" {
     try std.testing.expectEqual(@as(u32, 5000), options.connect_timeout_ms.?);
 }
 
-test "parses booleans integers compressors and auth mechanism" {
+test "parses booleans integers pool sizing compressors and auth mechanism" {
     var options = try parse(
         std.testing.allocator,
-        "mongodb://alice:secret@localhost/admin?authMechanism=SCRAM-SHA-256&tls=true&directConnection=true&connectTimeoutMS=5000&socketTimeoutMS=6000&timeoutMS=7000&compressors=zlib,zstd",
+        "mongodb://alice:secret@localhost/admin?authMechanism=SCRAM-SHA-256&tls=true&directConnection=true&connectTimeoutMS=5000&socketTimeoutMS=6000&timeoutMS=7000&minPoolSize=2&maxPoolSize=10&maxConnecting=3&compressors=zlib,zstd",
     );
     defer options.deinit();
 
@@ -532,7 +562,28 @@ test "parses booleans integers compressors and auth mechanism" {
     try std.testing.expectEqual(@as(u32, 5000), options.connect_timeout_ms.?);
     try std.testing.expectEqual(@as(u32, 6000), options.socket_timeout_ms.?);
     try std.testing.expectEqual(@as(u64, 7000), options.timeout_ms.?);
+    try std.testing.expectEqual(@as(u32, 2), options.min_pool_size.?);
+    try std.testing.expectEqual(@as(u32, 10), options.max_pool_size.?);
+    try std.testing.expectEqual(@as(u32, 3), options.max_connecting.?);
     try std.testing.expectEqualSlices(Compressor, &.{ .zlib, .zstd }, options.compressors);
+}
+
+test "pool sizing URI validation follows CMAP bounds" {
+    var unlimited = try parse(
+        std.testing.allocator,
+        "mongodb://localhost?minPoolSize=20&maxPoolSize=0&maxConnecting=2",
+    );
+    defer unlimited.deinit();
+    try std.testing.expectEqual(@as(u32, 0), unlimited.max_pool_size.?);
+
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parse(std.testing.allocator, "mongodb://localhost?minPoolSize=3&maxPoolSize=2"),
+    );
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parse(std.testing.allocator, "mongodb://localhost?maxConnecting=0"),
+    );
 }
 
 test "tls and ssl aliases may repeat only with the same value" {
@@ -553,6 +604,10 @@ test "duplicate recognized scalar options are deterministic errors" {
     try std.testing.expectError(
         error.DuplicateOption,
         parse(std.testing.allocator, "mongodb://localhost?connectTimeoutMS=1&connectTimeoutMS=2"),
+    );
+    try std.testing.expectError(
+        error.DuplicateOption,
+        parse(std.testing.allocator, "mongodb://localhost?maxPoolSize=1&maxPoolSize=2"),
     );
 }
 
