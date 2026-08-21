@@ -3,6 +3,7 @@ const bongo = @import("bongo");
 
 const Disposition = enum {
     supported,
+    local_bridge,
     deferred,
 };
 
@@ -12,39 +13,42 @@ const Suite = struct {
     reason: ?[]const u8 = null,
 };
 
-/// This manifest is deliberately explicit. When upstream MongoDB fixtures are
-/// wired into a suite, its disposition moves to `supported`; unsupported
-/// suites remain visible instead of silently disappearing from the test run.
+/// The early harness distinguishes upstream-backed coverage from deterministic
+/// Bongo bridge coverage. Moving a suite to `local_bridge` means its 0.5
+/// behavior is actively gated; it does not claim that every upstream MongoDB
+/// fixture has been ingested yet.
 const suites = [_]Suite{
     .{ .name = "connection-string", .disposition = .supported },
     .{ .name = "crud", .disposition = .supported },
     .{ .name = "sessions", .disposition = .supported },
     .{ .name = "transactions", .disposition = .supported },
     .{
-        .name = "sdam",
-        .disposition = .deferred,
-        .reason = "full SDAM monitoring is not implemented",
+        .name = "cmap",
+        .disposition = .local_bridge,
+        .reason = "CMAP generation, sizing, wait-queue and monitoring are gated locally; upstream fixture ingestion remains incremental",
     },
     .{
-        .name = "cmap",
-        .disposition = .deferred,
-        .reason = "CMAP-grade concurrency work is still in progress",
+        .name = "sdam",
+        .disposition = .local_bridge,
+        .reason = "SDAM discovery, selection, RTT window and failover are gated locally; full upstream fixture ingestion remains incremental",
     },
 };
 
-fn deferredSuiteCount() usize {
+fn dispositionCount(disposition: Disposition) usize {
     var count: usize = 0;
     for (suites) |suite| {
-        if (suite.disposition == .deferred) count += 1;
+        if (suite.disposition == disposition) count += 1;
     }
     return count;
 }
 
-test "spec harness has explicit supported and deferred suite dispositions" {
+test "spec harness reports upstream and local bridge coverage explicitly" {
     try std.testing.expectEqual(@as(usize, 6), suites.len);
-    try std.testing.expectEqual(@as(usize, 2), deferredSuiteCount());
+    try std.testing.expectEqual(@as(usize, 4), dispositionCount(.supported));
+    try std.testing.expectEqual(@as(usize, 2), dispositionCount(.local_bridge));
+    try std.testing.expectEqual(@as(usize, 0), dispositionCount(.deferred));
     for (suites) |suite| {
-        if (suite.disposition == .deferred) {
+        if (suite.disposition != .supported) {
             try std.testing.expect(suite.reason != null);
         }
     }
@@ -106,4 +110,50 @@ test "spec harness rejects conflicting normalized URI options" {
             "mongodb://localhost/?tls=true&ssl=false",
         ),
     );
+}
+
+test "CMAP bridge clears generations and pauses before ready" {
+    var pool = try bongo.mongo.Pool.init(std.testing.io, std.testing.allocator, 2);
+    defer pool.deinit();
+    try pool.ready();
+
+    const first_generation = pool.generationSnapshot();
+    const permit = try pool.tryStartCreate();
+    try pool.finishCreate(permit);
+    pool.noteDiscarded();
+
+    try pool.clear();
+    const snapshot = pool.stats();
+    try std.testing.expectEqual(first_generation +% 1, snapshot.generation);
+    try std.testing.expectEqual(.paused, snapshot.state);
+    try std.testing.expectError(error.PoolCleared, pool.tryStartCreate());
+    try pool.ready();
+    try std.testing.expectEqual(.ready, pool.stats().state);
+}
+
+test "server-selection bridge validates read preference constraints" {
+    const allocator = std.testing.allocator;
+    const tag_document = try bongo.bson.encode(allocator, .{ .region = "east" });
+    defer allocator.free(tag_document);
+    const tags = [_]bongo.ReadPreferenceTagSet{.{ .document = tag_document }};
+
+    try (bongo.ReadPreference{
+        .mode = .nearest,
+        .tag_sets = &tags,
+        .max_staleness_seconds = 120,
+    }).validate();
+    try std.testing.expectError(
+        error.PrimaryWithTagSets,
+        (bongo.ReadPreference{
+            .mode = .primary,
+            .tag_sets = &tags,
+        }).validate(),
+    );
+}
+
+test "RuntimeClient exposes the 0.5 SDAM control surface" {
+    try std.testing.expect(@hasDecl(bongo.RuntimeClient, "refreshTopology"));
+    try std.testing.expect(@hasDecl(bongo.RuntimeClient, "topologyType"));
+    try std.testing.expect(@hasDecl(bongo.RuntimeClient, "discoveredServerCount"));
+    try std.testing.expect(@hasDecl(bongo.RuntimeClient, "findWithReadPreference"));
 }
