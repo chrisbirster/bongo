@@ -153,10 +153,7 @@ pub const Manager = struct {
                 continue;
             };
             defer description.deinit();
-            const elapsed = start.untilNow(self.io) catch .{
-                .raw = Io.Duration.fromMilliseconds(0),
-                .clock = .awake,
-            };
+            const elapsed = start.untilNow(self.io);
             const elapsed_ms = @max(@as(i64, 0), elapsed.raw.toMilliseconds());
 
             self.mutex.lockUncancelable(self.io);
