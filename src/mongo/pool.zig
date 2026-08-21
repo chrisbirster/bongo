@@ -33,7 +33,7 @@ pub const Pool = struct {
     io: Io,
     max_size: usize,
     mutex: Io.Mutex = Io.Mutex.init,
-    condition: Io.Condition = .{},
+    condition: Io.Condition = std.mem.zeroes(Io.Condition),
     state: State = .ready,
     created: usize = 0,
     checked_out: usize = 0,
