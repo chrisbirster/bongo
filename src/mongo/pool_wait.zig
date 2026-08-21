@@ -16,23 +16,29 @@ pub const Error = error{
 /// Wait until a checked-in connection or connection-creation slot becomes
 /// available. `deadline` is absolute and monotonic, so wakeups/retries never
 /// restart the caller's checkout timeout.
-///
-/// The condition wait is cancellable specifically so `Io.Select` can cancel
-/// it after the deadline task wins. `cancelDiscard` completes that cancellation
-/// before this function returns, ensuring the condition wait has re-acquired
-/// the pool mutex before the outer unlock runs.
 pub fn waitForAvailabilityUntil(
     pool: *Pool,
     deadline: ?Io.Clock.Timestamp,
 ) !void {
+    waitLocked(pool, deadline) catch |err| {
+        // Monitoring callbacks run only after `waitLocked` has released the
+        // core mutex, so observers cannot re-enter a locked pool.
+        switch (err) {
+            error.WaitQueueTimeout => pool.checkoutFailed(.timeout),
+            error.PoolCleared => pool.checkoutFailed(.pool_cleared),
+            error.PoolClosed => pool.checkoutFailed(.pool_closed),
+            else => {},
+        }
+        return err;
+    };
+}
+
+fn waitLocked(pool: *Pool, deadline: ?Io.Clock.Timestamp) !void {
     const core = &pool.core;
     core.mutex.lockUncancelable(core.io);
     defer core.mutex.unlock(core.io);
 
-    checkState(pool) catch |err| {
-        recordStateFailure(pool, err);
-        return err;
-    };
+    try checkState(pool);
     if (core.idle.items.len != 0 or canStartCreateLocked(pool)) return;
 
     core.waiters += 1;
@@ -44,24 +50,21 @@ pub fn waitForAvailabilityUntil(
     {
         if (deadline) |target| {
             if (!Io.Clock.Timestamp.now(core.io, .awake).compare(.lt, target)) {
-                pool.checkoutFailed(.timeout);
                 return error.WaitQueueTimeout;
             }
-            waitOnceUntilLocked(pool, target) catch |err| {
-                if (err == error.WaitQueueTimeout) pool.checkoutFailed(.timeout);
-                return err;
-            };
+            try waitOnceUntilLocked(pool, target);
         } else {
             core.condition.waitUncancelable(core.io, &core.mutex);
         }
     }
 
-    checkState(pool) catch |err| {
-        recordStateFailure(pool, err);
-        return err;
-    };
+    try checkState(pool);
 }
 
+/// The condition wait is cancellable specifically so `Io.Select` can cancel
+/// it after the deadline task wins. `cancelDiscard` completes that cancellation
+/// before this function returns, ensuring the condition wait has re-acquired
+/// the pool mutex before the outer unlock runs.
 fn waitOnceUntilLocked(pool: *Pool, deadline: Io.Clock.Timestamp) !void {
     const core = &pool.core;
     var results: [2]WaitTaskResult = undefined;
@@ -95,14 +98,6 @@ fn checkState(pool: *Pool) !void {
         .paused => error.PoolCleared,
         .closing, .closed => error.PoolClosed,
     };
-}
-
-fn recordStateFailure(pool: *Pool, err: anyerror) void {
-    switch (err) {
-        error.PoolCleared => pool.checkoutFailed(.pool_cleared),
-        error.PoolClosed => pool.checkoutFailed(.pool_closed),
-        else => {},
-    }
 }
 
 fn canStartCreateLocked(pool: *Pool) bool {
