@@ -40,11 +40,12 @@ pub const Error = error{
 };
 
 /// Programmatic CMAP overrides. Null fields inherit from the connection string,
-/// then from the CMAP defaults (min=0, max=100, maxConnecting=2).
+/// then from CMAP defaults (min=0, max=100, maxConnecting=2, maxIdleTimeMS=0).
 pub const Options = struct {
     min_pool_size: ?usize = null,
     max_pool_size: ?usize = null,
     max_connecting: ?usize = null,
+    max_idle_time_ms: ?u64 = null,
 };
 
 pub const OwnedDocument = struct {
@@ -90,13 +91,15 @@ pub const RuntimeClient = struct {
             try uri_options.parse(allocator, connection_string);
         errdefer parsed.deinit();
 
-        const uri_min_pool_size: usize = if (parsed.min_pool_size) |value| value else 0;
-        const uri_max_pool_size: usize = if (parsed.max_pool_size) |value| value else 100;
-        const uri_max_connecting: usize = if (parsed.max_connecting) |value| value else 2;
+        const uri_min_pool_size: usize = if (parsed.min_pool_size) |value| @intCast(value) else 0;
+        const uri_max_pool_size: usize = if (parsed.max_pool_size) |value| @intCast(value) else 100;
+        const uri_max_connecting: usize = if (parsed.max_connecting) |value| @intCast(value) else 2;
+        const uri_max_idle_time_ms: u64 = parsed.max_idle_time_ms orelse 0;
         var pool = try Pool.initWithOptions(io, allocator, .{
             .min_size = options.min_pool_size orelse uri_min_pool_size,
             .max_size = options.max_pool_size orelse uri_max_pool_size,
             .max_connecting = options.max_connecting orelse uri_max_connecting,
+            .max_idle_time_ms = options.max_idle_time_ms orelse uri_max_idle_time_ms,
         });
         errdefer pool.deinit();
 
@@ -151,9 +154,6 @@ pub const RuntimeClient = struct {
         self.* = undefined;
     }
 
-    /// Stop accepting new work and wake any operations blocked in the pool wait
-    /// queue. Existing operations/handles retain ownership until they unwind;
-    /// call `deinitChecked` after they have completed.
     pub fn requestShutdown(self: *RuntimeClient) void {
         self.state_mutex.lockUncancelable(self.io);
         self.closing = true;
@@ -475,13 +475,15 @@ pub const RuntimeClient = struct {
         }
     }
 
-    /// Return a healthy checked-out transport to the idle pool. This method
-    /// owns cleanup if growing the idle list fails or the handle was invalidated
-    /// by a concurrent pool clear.
+    /// Return a healthy checked-out transport to the idle pool. After a normal
+    /// check-in, best-effort maintenance restores minPoolSize if idle pruning
+    /// removed older connections.
     fn checkin(self: *RuntimeClient, transport: PoolHandle) void {
         self.pool.put(transport) catch {
             self.discard(transport);
+            return;
         };
+        self.ensureMinPool() catch {};
     }
 
     fn releaseTransport(self: *RuntimeClient, transport: *?PoolHandle) void {
@@ -516,9 +518,6 @@ pub const RuntimeClient = struct {
         self.active_handles -= 1;
     }
 
-    /// A request error can leave a stream partially written or with an unread
-    /// response still pending. Never return such a transport to the pool,
-    /// including after a client-side operation timeout.
     fn requestCheckedOut(
         self: *RuntimeClient,
         transport: *?PoolHandle,
@@ -757,7 +756,6 @@ pub const Cursor = struct {
         self.close() catch {};
         self.client.allocator.free(self.response_bytes);
         self.client.allocator.free(self.database_name);
-        self.client.allocator.free(self.collection_name);
         self.client.releaseTransport(&self.transport);
         self.client.releaseHandle();
         self.* = undefined;
