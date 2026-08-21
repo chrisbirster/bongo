@@ -77,16 +77,12 @@ test "43 - pool clear invalidates checked-out generation" {
     try std.testing.expectEqual(@as(usize, 1), after_clear.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_clear.idle);
 
-    // Returning the old-generation transaction connection must destroy it,
-    // not make it available to the next checkout.
     transaction.deinit();
     const after_stale_return = client.pool.stats();
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.total);
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.idle);
 
-    // SDAM owns this transition in the production path. The focused CMAP test
-    // drives it directly so a fresh generation can service the next checkout.
     try client.pool.ready();
     _ = try client.insertOne(database, collection, .{
         ._id = @as(i64, 63002),
@@ -206,6 +202,7 @@ test "43 - CMAP monitor emits deterministic checkout and lifecycle events" {
         collector.kinds[0..collector.len],
     );
 
+    client.pool.clearMonitor();
     _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63004) });
 }
 
@@ -221,8 +218,6 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
     );
     defer client.deinit();
 
-    // Hold the only pooled connection before monitoring starts so the event
-    // sequence covers only the saturated checkout being tested.
     var transaction = try client.beginTransaction(.{});
     defer transaction.deinit();
 
@@ -248,4 +243,24 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
     try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
     try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
     try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
+}
+
+test "43 - CMAP monitor emits pool close lifecycle" {
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_close?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
+    client.requestShutdown();
+
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .connection_closed, .pool_closed },
+        collector.kinds[0..collector.len],
+    );
+    try client.deinitChecked();
 }
