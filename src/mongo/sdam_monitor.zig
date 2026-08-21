@@ -89,9 +89,6 @@ pub const Manager = struct {
             .topology = topology,
         };
 
-        // Existing RuntimeClient construction already performs network I/O.
-        // Populate the first SDAM view before returning so the legacy write
-        // path and the monitor agree on the selected primary immediately.
         self.scan() catch {};
         self.thread = try std.Thread.spawn(.{}, run, .{self});
         return self;
@@ -250,9 +247,6 @@ pub const Manager = struct {
                 return error.ServerSelectionTimeout;
             }
 
-            // Multi-threaded server selection requests an immediate topology
-            // check while no suitable server is available, rate-limited by the
-            // SDAM minimum heartbeat frequency.
             self.scan() catch {};
 
             self.mutex.lockUncancelable(self.io);
@@ -312,11 +306,11 @@ pub const Manager = struct {
         if (self.stop_requested) return;
 
         var results: [2]WaitResult = undefined;
-        var select: Io.Select(WaitResult) = .init(self.io, &results);
-        defer select.cancelDiscard();
-        select.concurrent(.signal, conditionWaitTask, .{self}) catch return;
-        select.concurrent(.timer, deadlineWaitTask, .{ self.io, deadline }) catch return;
-        _ = select.await() catch return;
+        var wait_select: Io.Select(WaitResult) = .init(self.io, &results);
+        defer wait_select.cancelDiscard();
+        wait_select.concurrent(.signal, conditionWaitTask, .{self}) catch return;
+        wait_select.concurrent(.timer, deadlineWaitTask, .{ self.io, deadline }) catch return;
+        _ = wait_select.await() catch return;
     }
 
     fn openTransport(self: *Manager, host: []const u8, port: u16) !Transport {
