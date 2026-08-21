@@ -1,3 +1,4 @@
+const std = @import("std");
 const core_mod = @import("pool_core.zig");
 const monitor_mod = @import("cmap_monitor.zig");
 
@@ -16,12 +17,8 @@ pub const Options = struct {
     max_size: usize = 100,
     max_connecting: usize = 2,
     max_idle_time_ms: u64 = 0,
-    monitor: ?Monitor = null,
+    monitor: ?monitor_mod.Monitor = null,
 };
-
-threadlocal var checkout_pool: ?*Pool = null;
-threadlocal var maintenance_pool: ?*Pool = null;
-threadlocal var suppress_next_checkin_pool: ?*Pool = null;
 
 /// Observable CMAP facade around the validated pool core.
 ///
@@ -29,21 +26,20 @@ threadlocal var suppress_next_checkin_pool: ?*Pool = null;
 /// emitted only after core methods return, so user monitoring code never runs
 /// while the pool core mutex is held.
 pub const Pool = struct {
+    pub const Event = monitor_mod.Event;
+    pub const Monitor = monitor_mod.Monitor;
+
     core: core_mod.Pool,
-    monitor: ?Monitor = null,
-    opened_emitted: bool = false,
+    monitor: ?monitor_mod.Monitor = null,
     closed_emitted: bool = false,
 
-    pub const MonitoringEvent = Event;
-    pub const MonitoringMonitor = Monitor;
-
-    pub fn init(io: @import("std").Io, allocator: @import("std").mem.Allocator, max_size: usize) Error!Pool {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, max_size: usize) Error!Pool {
         return initWithOptions(io, allocator, .{ .max_size = max_size });
     }
 
     pub fn initWithOptions(
-        io: @import("std").Io,
-        allocator: @import("std").mem.Allocator,
+        io: std.Io,
+        allocator: std.mem.Allocator,
         options: Options,
     ) Error!Pool {
         var self: Pool = .{
@@ -62,7 +58,7 @@ pub const Pool = struct {
     /// Attach or replace a synchronous CMAP monitor. Attaching after client
     /// construction emits a synthetic `pool_opened` event for the current pool
     /// generation so the observer always has a lifecycle starting point.
-    pub fn setMonitor(self: *Pool, monitor: Monitor) void {
+    pub fn setMonitor(self: *Pool, monitor: monitor_mod.Monitor) void {
         self.monitor = monitor;
         self.closed_emitted = false;
         self.emitOpened();
@@ -79,9 +75,7 @@ pub const Pool = struct {
     pub fn deinit(self: *Pool) void {
         self.close();
         self.core.deinit();
-        if (checkout_pool == self) checkout_pool = null;
-        if (maintenance_pool == self) maintenance_pool = null;
-        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+        self.clearThreadContext();
         self.* = undefined;
     }
 
@@ -100,6 +94,8 @@ pub const Pool = struct {
             self.emit(.{ .pool_closed = .{ .generation = before.generation } });
         }
         if (checkout_pool == self) self.checkoutFailed(.pool_closed);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn clear(self: *Pool) Error!void {
@@ -115,6 +111,8 @@ pub const Pool = struct {
         }
         self.emit(.{ .pool_cleared = .{ .generation = generation } });
         if (checkout_pool == self) self.checkoutFailed(.pool_cleared);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn generationSnapshot(self: *Pool) u64 {
@@ -150,6 +148,9 @@ pub const Pool = struct {
             } else if (err == error.PoolClosed and checkout_pool == self) {
                 self.checkoutFailed(.pool_closed);
             }
+            if (maintenance_pool == self and err != error.PoolExhausted and err != error.ConnectLimitReached) {
+                maintenance_pool = null;
+            }
             return err;
         };
         self.emit(.{ .connection_created = .{ .generation = permit.generation } });
@@ -175,6 +176,8 @@ pub const Pool = struct {
                     else => .connection_error,
                 });
             }
+            if (maintenance_pool == self) maintenance_pool = null;
+            if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
             return err;
         };
 
@@ -197,6 +200,8 @@ pub const Pool = struct {
             .reason = .error,
         } });
         if (checkout_pool == self) self.checkoutFailed(.connection_error);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn canCreate(self: *Pool) bool {
@@ -229,7 +234,11 @@ pub const Pool = struct {
     }
 
     pub fn put(self: *Pool, handle: Handle) !void {
-        try self.core.put(handle);
+        self.core.put(handle) catch |err| {
+            if (maintenance_pool == self) maintenance_pool = null;
+            if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+            return err;
+        };
         if (suppress_next_checkin_pool == self) {
             suppress_next_checkin_pool = null;
         } else if (maintenance_pool == self) {
@@ -252,6 +261,8 @@ pub const Pool = struct {
             .count = 1,
             .reason = reason,
         } });
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn stats(self: *Pool) Stats {
@@ -283,7 +294,6 @@ pub const Pool = struct {
     }
 
     fn emitOpened(self: *Pool) void {
-        self.opened_emitted = true;
         self.emit(.{ .pool_opened = .{
             .generation = self.core.generationSnapshot(),
         } });
@@ -298,8 +308,18 @@ pub const Pool = struct {
         } });
     }
 
-    fn emit(self: *Pool, event: Event) void {
+    fn clearThreadContext(self: *Pool) void {
+        if (checkout_pool == self) checkout_pool = null;
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+    }
+
+    fn emit(self: *Pool, event: monitor_mod.Event) void {
         const monitor = self.monitor orelse return;
         monitor.emit(event);
     }
 };
+
+threadlocal var checkout_pool: ?*Pool = null;
+threadlocal var maintenance_pool: ?*Pool = null;
+threadlocal var suppress_next_checkin_pool: ?*Pool = null;
