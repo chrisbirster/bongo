@@ -25,39 +25,51 @@ pub fn waitForAvailabilityUntil(
     pool: *Pool,
     deadline: ?Io.Clock.Timestamp,
 ) !void {
-    pool.mutex.lockUncancelable(pool.io);
-    defer pool.mutex.unlock(pool.io);
+    const core = &pool.core;
+    core.mutex.lockUncancelable(core.io);
+    defer core.mutex.unlock(core.io);
 
-    try checkState(pool);
-    if (pool.idle.items.len != 0 or canStartCreateLocked(pool)) return;
+    checkState(pool) catch |err| {
+        recordStateFailure(pool, err);
+        return err;
+    };
+    if (core.idle.items.len != 0 or canStartCreateLocked(pool)) return;
 
-    pool.waiters += 1;
-    defer pool.waiters -= 1;
+    core.waiters += 1;
+    defer core.waiters -= 1;
 
-    while (pool.state == .ready and
-        pool.idle.items.len == 0 and
+    while (core.state == .ready and
+        core.idle.items.len == 0 and
         !canStartCreateLocked(pool))
     {
         if (deadline) |target| {
-            if (!Io.Clock.Timestamp.now(pool.io, .awake).compare(.lt, target)) {
+            if (!Io.Clock.Timestamp.now(core.io, .awake).compare(.lt, target)) {
+                pool.checkoutFailed(.timeout);
                 return error.WaitQueueTimeout;
             }
-            try waitOnceUntilLocked(pool, target);
+            waitOnceUntilLocked(pool, target) catch |err| {
+                if (err == error.WaitQueueTimeout) pool.checkoutFailed(.timeout);
+                return err;
+            };
         } else {
-            pool.condition.waitUncancelable(pool.io, &pool.mutex);
+            core.condition.waitUncancelable(core.io, &core.mutex);
         }
     }
 
-    try checkState(pool);
+    checkState(pool) catch |err| {
+        recordStateFailure(pool, err);
+        return err;
+    };
 }
 
 fn waitOnceUntilLocked(pool: *Pool, deadline: Io.Clock.Timestamp) !void {
+    const core = &pool.core;
     var results: [2]WaitTaskResult = undefined;
-    var select: Io.Select(WaitTaskResult) = .init(pool.io, &results);
+    var select: Io.Select(WaitTaskResult) = .init(core.io, &results);
     defer select.cancelDiscard();
 
     try select.concurrent(.condition, conditionWaitTask, .{pool});
-    try select.concurrent(.timer, deadlineWaitTask, .{ pool.io, deadline });
+    try select.concurrent(.timer, deadlineWaitTask, .{ core.io, deadline });
 
     switch (try select.await()) {
         .condition => |result| try result,
@@ -69,7 +81,8 @@ fn waitOnceUntilLocked(pool: *Pool, deadline: Io.Clock.Timestamp) !void {
 }
 
 fn conditionWaitTask(pool: *Pool) anyerror!void {
-    try pool.condition.wait(pool.io, &pool.mutex);
+    const core = &pool.core;
+    try core.condition.wait(core.io, &core.mutex);
 }
 
 fn deadlineWaitTask(io: Io, deadline: Io.Clock.Timestamp) anyerror!void {
@@ -77,19 +90,28 @@ fn deadlineWaitTask(io: Io, deadline: Io.Clock.Timestamp) anyerror!void {
 }
 
 fn checkState(pool: *Pool) !void {
-    return switch (pool.state) {
+    return switch (pool.core.state) {
         .ready => {},
         .paused => error.PoolCleared,
         .closing, .closed => error.PoolClosed,
     };
 }
 
+fn recordStateFailure(pool: *Pool, err: anyerror) void {
+    switch (err) {
+        error.PoolCleared => pool.checkoutFailed(.pool_cleared),
+        error.PoolClosed => pool.checkoutFailed(.pool_closed),
+        else => {},
+    }
+}
+
 fn canStartCreateLocked(pool: *Pool) bool {
-    const under_max = pool.max_size == 0 or
-        pool.created + pool.connecting < pool.max_size;
-    return pool.state == .ready and
+    const core = &pool.core;
+    const under_max = core.max_size == 0 or
+        core.created + core.connecting < core.max_size;
+    return core.state == .ready and
         under_max and
-        pool.connecting < pool.max_connecting;
+        core.connecting < core.max_connecting;
 }
 
 test "checkout wait uses one absolute deadline" {
