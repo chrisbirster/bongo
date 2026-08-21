@@ -41,7 +41,7 @@ pub const Error = error{
 
 pub const Options = struct {
     min_pool_size: usize = 0,
-    max_pool_size: usize = 4,
+    max_pool_size: usize = 100,
     max_connecting: usize = 2,
 };
 
@@ -101,6 +101,7 @@ pub const RuntimeClient = struct {
             .connection_options = parsed,
             .pool = pool,
         };
+        try self.pool.ready();
 
         const permit = try self.pool.tryStartCreate();
         var selected = self.openWritableTransport() catch |err| {
