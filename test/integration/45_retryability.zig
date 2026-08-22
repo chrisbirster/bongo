@@ -111,6 +111,53 @@ test "45 - commit retries UnknownTransactionCommitResult with same transaction" 
     try std.testing.expect((try found.next()) != null);
 }
 
+test "45 - shutdown waits for a live secondary read handle" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const database = "bongo_shutdown_read";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        io,
+        allocator,
+        "mongodb://localhost:27021/bongo_shutdown_read?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
+        .{},
+    );
+    var client_live = true;
+    defer if (client_live) client.deinit();
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 66004) });
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 66004),
+        .value = @as(i32, 4),
+    });
+
+    var maybe_cursor: ?bongo.RuntimeCursor = null;
+    for (0..30) |_| {
+        maybe_cursor = client.findWithReadPreference(
+            database,
+            collection,
+            .{ ._id = @as(i64, 66004) },
+            .{ .limit = @as(i64, 1) },
+            .{ .mode = .secondary },
+        ) catch null;
+        if (maybe_cursor != null) break;
+        sleepMs(io, 100);
+    }
+    var cursor = maybe_cursor orelse return error.SecondaryUnavailable;
+
+    client.requestShutdown();
+    try std.testing.expectError(error.ReadRuntimeActiveHandles, client.deinitChecked());
+    try std.testing.expectError(
+        error.ClientClosed,
+        client.find(database, collection, .{}, .{ .limit = @as(i64, 1) }),
+    );
+
+    cursor.deinit();
+    try client.deinitChecked();
+    client_live = false;
+}
+
 fn failNextRead(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -190,4 +237,12 @@ fn findPrimaryPort(io: std.Io, allocator: std.mem.Allocator) !u16 {
         }
     }
     return error.NoPrimary;
+}
+
+fn sleepMs(io: std.Io, milliseconds: i64) void {
+    const duration: std.Io.Clock.Duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(milliseconds),
+        .clock = .awake,
+    };
+    duration.sleep(io) catch {};
 }
