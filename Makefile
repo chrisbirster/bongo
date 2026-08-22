@@ -13,6 +13,8 @@ export MONGO_IMAGE
 	runtime-integration-test \
 	cmap-integration-test \
 	sdam-integration-test \
+	retryability-integration-test \
+	fuzz-test \
 	deez-readiness-test \
 	fixtures \
 	fixtures-status \
@@ -29,6 +31,8 @@ help:
 		'make runtime-integration-test Run RuntimeClient transaction test' \
 		'make cmap-integration-test    Run CMAP pool lifecycle integration tests' \
 		'make sdam-integration-test    Run 3-member SDAM discovery/failover tests' \
+		'make retryability-integration-test Run retryable read/write/commit tests' \
+		'make fuzz-test                Run deterministic malformed-wire stress tests' \
 		'make deez-readiness-test      Test the Deez-facing API surface' \
 		'make fixtures                 Ensure all MongoDB fixtures are ready' \
 		'make fixtures-status          Show fixture status' \
@@ -46,6 +50,8 @@ test:
 	@$(MAKE) runtime-integration-test
 	@$(MAKE) cmap-integration-test
 	@$(MAKE) sdam-integration-test
+	@$(MAKE) retryability-integration-test
+	@$(MAKE) fuzz-test
 	@$(MAKE) deez-readiness-test
 	@printf '\nBongo test suite passed.\n'
 
@@ -74,6 +80,13 @@ cmap-integration-test:
 sdam-integration-test:
 	@./scripts/ensure-mongo-fixture.sh sdam
 	zig build sdam-integration-test
+
+retryability-integration-test:
+	@./scripts/ensure-mongo-fixture.sh sdam
+	zig build retryability-integration-test
+
+fuzz-test:
+	zig build fuzz-test
 
 deez-readiness-test:
 	zig build deez-readiness-test

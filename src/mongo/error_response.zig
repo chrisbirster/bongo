@@ -44,7 +44,6 @@ pub const Status = struct {
     }
 
     pub fn retryableWrite(self: Status) bool {
-        if (self.ok) return false;
         return self.retryable_write or self.retryable_error;
     }
 

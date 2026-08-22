@@ -23,6 +23,10 @@ fn isRetryableReadFailure(err: anyerror) bool {
     return err == error.RetryableRead or error_response.isRetryableTransportError(err);
 }
 
+fn isRetryableWriteFailure(err: anyerror) bool {
+    return err == error.RetryableWrite or error_response.isRetryableTransportError(err);
+}
+
 /// v0.5 keeps the v0.4 CMAP override surface source-compatible. Read
 /// preference is configured by URI (`readPreference`, `maxStalenessSeconds`)
 /// or explicitly per read through `findWithReadPreference`.
@@ -233,10 +237,11 @@ pub const RuntimeClient = struct {
                 &session,
             ) catch |err| {
                 self.notePrimaryOperationFailure(err);
-                if (err == error.RetryableWrite and !retried) {
+                if (isRetryableWriteFailure(err) and !retried) {
                     retried = true;
                     continue;
                 }
+                if (err == error.RetryableWrite) return error.CommandFailed;
                 return err;
             };
             return result;
@@ -274,10 +279,11 @@ pub const RuntimeClient = struct {
                 &session,
             ) catch |err| {
                 self.notePrimaryOperationFailure(err);
-                if (err == error.RetryableWrite and !retried) {
+                if (isRetryableWriteFailure(err) and !retried) {
                     retried = true;
                     continue;
                 }
+                if (err == error.RetryableWrite) return error.CommandFailed;
                 return err;
             };
             return result;
@@ -311,10 +317,11 @@ pub const RuntimeClient = struct {
                 &session,
             ) catch |err| {
                 self.notePrimaryOperationFailure(err);
-                if (err == error.RetryableWrite and !retried) {
+                if (isRetryableWriteFailure(err) and !retried) {
                     retried = true;
                     continue;
                 }
+                if (err == error.RetryableWrite) return error.CommandFailed;
                 return err;
             };
             return result;
@@ -423,10 +430,11 @@ pub const RuntimeClient = struct {
                 &session,
             ) catch |err| {
                 self.notePrimaryOperationFailure(err);
-                if (err == error.RetryableWrite and !retried) {
+                if (isRetryableWriteFailure(err) and !retried) {
                     retried = true;
                     continue;
                 }
+                if (err == error.RetryableWrite) return error.CommandFailed;
                 return err;
             };
             return result;
@@ -463,8 +471,8 @@ pub const RuntimeClient = struct {
     fn canRetryWrites(self: *RuntimeClient) bool {
         if (!self.retry_writes or !self.supports_sessions) return false;
         return switch (self.topologyType()) {
-            .replica_set_no_primary, .replica_set_with_primary, .sharded, .load_balanced => true,
-            .unknown, .single => false,
+            .replica_set_no_primary, .replica_set_with_primary => true,
+            .unknown, .single, .sharded, .load_balanced => false,
         };
     }
 

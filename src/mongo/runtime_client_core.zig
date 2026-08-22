@@ -280,7 +280,6 @@ pub const RuntimeClient = struct {
         );
         defer self.allocator.free(request);
         const response = self.requestCheckedOut(&transport, request) catch |err| {
-            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
             return err;
         };
         defer self.allocator.free(response);
@@ -317,7 +316,6 @@ pub const RuntimeClient = struct {
         );
         defer self.allocator.free(request);
         const response = self.requestCheckedOut(&transport, request) catch |err| {
-            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
             return err;
         };
         defer self.allocator.free(response);
@@ -350,7 +348,6 @@ pub const RuntimeClient = struct {
         );
         defer self.allocator.free(request);
         const response = self.requestCheckedOut(&transport, request) catch |err| {
-            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
             return err;
         };
         defer self.allocator.free(response);
@@ -483,7 +480,6 @@ pub const RuntimeClient = struct {
         );
         defer self.allocator.free(request);
         const response = self.requestCheckedOut(&transport, request) catch |err| {
-            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
             return err;
         };
         defer self.allocator.free(response);

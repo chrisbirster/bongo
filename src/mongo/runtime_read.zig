@@ -105,7 +105,7 @@ pub const Runtime = struct {
     pub fn clearForRetry(self: *Runtime) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        for (self.pools.items) |server_pool| {
+        for (self.pools.items) |*server_pool| {
             server_pool.pool.clear() catch {};
             server_pool.pool.ready() catch {};
         }

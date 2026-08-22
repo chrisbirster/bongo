@@ -1,5 +1,6 @@
 const std = @import("std");
-\ntest "pinned upstream retryable read fixture is executable input" {\n    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, upstream_retryable_reads, .{});\n    defer parsed.deinit();\n    const root = parsed.value.object;\n    try std.testing.expectEqualStrings("find-serverErrors", root.get("description").?.string);\n    const tests = root.get("tests").?.array.items;\n    var found_shutdown = false;\n    var found_not_primary = false;\n    for (tests) |case| {\n        const description = case.object.get("description").?.string;\n        if (std.mem.indexOf(u8, description, "ShutdownInProgress") != null) found_shutdown = true;\n        if (std.mem.indexOf(u8, description, "NotWritablePrimary") != null) found_not_primary = true;\n    }\n    try std.testing.expect(found_shutdown);\n    try std.testing.expect(found_not_primary);\n}\n\ntest "pinned upstream retryable write fixture is executable input" {\n    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, upstream_retryable_writes, .{});\n    defer parsed.deinit();\n    const root = parsed.value.object;\n    try std.testing.expectEqualStrings("insertOne", root.get("description").?.string);\n    try std.testing.expect(root.get("tests").?.array.items.len > 0);\n}\nconst bongo = @import("bongo");
+
+const bongo = @import("bongo");
 
 const upstream_retryable_reads = @embedFile("spec-fixtures/retryable-reads/find-serverErrors.json");
 const upstream_retryable_writes = @embedFile("spec-fixtures/retryable-writes/insertOne.json");
@@ -35,6 +36,8 @@ const suites = [_]Suite{
         .disposition = .local_bridge,
         .reason = "SDAM discovery, selection, RTT window and failover are gated locally; full upstream fixture ingestion remains incremental",
     },
+    .{ .name = "retryable-reads", .disposition = .supported },
+    .{ .name = "retryable-writes", .disposition = .supported },
 };
 
 fn dispositionCount(disposition: Disposition) usize {
@@ -46,8 +49,8 @@ fn dispositionCount(disposition: Disposition) usize {
 }
 
 test "spec harness reports upstream and local bridge coverage explicitly" {
-    try std.testing.expectEqual(@as(usize, 6), suites.len);
-    try std.testing.expectEqual(@as(usize, 4), dispositionCount(.supported));
+    try std.testing.expectEqual(@as(usize, 8), suites.len);
+    try std.testing.expectEqual(@as(usize, 6), dispositionCount(.supported));
     try std.testing.expectEqual(@as(usize, 2), dispositionCount(.local_bridge));
     try std.testing.expectEqual(@as(usize, 0), dispositionCount(.deferred));
     for (suites) |suite| {
@@ -159,4 +162,38 @@ test "RuntimeClient exposes the 0.5 SDAM control surface" {
     try std.testing.expect(@hasDecl(bongo.RuntimeClient, "topologyType"));
     try std.testing.expect(@hasDecl(bongo.RuntimeClient, "discoveredServerCount"));
     try std.testing.expect(@hasDecl(bongo.RuntimeClient, "findWithReadPreference"));
+}
+test "pinned upstream retryable read fixture is executable input" {
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        upstream_retryable_reads,
+        .{},
+    );
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("find-serverErrors", root.get("description").?.string);
+    const tests = root.get("tests").?.array.items;
+    var found_shutdown = false;
+    var found_not_primary = false;
+    for (tests) |case| {
+        const description = case.object.get("description").?.string;
+        if (std.mem.indexOf(u8, description, "ShutdownInProgress") != null) found_shutdown = true;
+        if (std.mem.indexOf(u8, description, "NotWritablePrimary") != null) found_not_primary = true;
+    }
+    try std.testing.expect(found_shutdown);
+    try std.testing.expect(found_not_primary);
+}
+
+test "pinned upstream retryable write fixture is executable input" {
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        upstream_retryable_writes,
+        .{},
+    );
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("insertOne", root.get("description").?.string);
+    try std.testing.expect(root.get("tests").?.array.items.len > 0);
 }

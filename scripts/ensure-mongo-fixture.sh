@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 MONGO_IMAGE="${MONGO_IMAGE:-mongo:latest}"
-FIXTURE_VERSION="2"
+FIXTURE_VERSION="3"
 
 die() {
     echo "error: $*" >&2
@@ -198,9 +198,9 @@ ensure_sdam() {
         bash -lc '
             set -e
             mkdir -p /data/rs0-0 /data/rs0-1 /data/rs0-2
-            mongod --replSet rs0 --port 27021 --dbpath /data/rs0-0 --bind_ip_all --fork --logpath /tmp/rs0-0.log
-            mongod --replSet rs0 --port 27022 --dbpath /data/rs0-1 --bind_ip_all --fork --logpath /tmp/rs0-1.log
-            mongod --replSet rs0 --port 27023 --dbpath /data/rs0-2 --bind_ip_all --fork --logpath /tmp/rs0-2.log
+            mongod --replSet rs0 --port 27021 --dbpath /data/rs0-0 --bind_ip_all --setParameter enableTestCommands=1 --fork --logpath /tmp/rs0-0.log
+            mongod --replSet rs0 --port 27022 --dbpath /data/rs0-1 --bind_ip_all --setParameter enableTestCommands=1 --fork --logpath /tmp/rs0-1.log
+            mongod --replSet rs0 --port 27023 --dbpath /data/rs0-2 --bind_ip_all --setParameter enableTestCommands=1 --fork --logpath /tmp/rs0-2.log
             tail -f /dev/null
         ' \
         >/dev/null
