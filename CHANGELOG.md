@@ -2,6 +2,54 @@
 
 Bongo follows semantic versioning while the project is pre-1.0. Minor releases (`0.x.0`) represent coherent driver capability milestones; patch releases (`0.x.y`) are reserved for compatible fixes within a released milestone.
 
+## 0.5.0 — 2026-08-22
+
+Bongo 0.5.0 is the first production-oriented replica-set `RuntimeClient` milestone. It completes the CMAP behavior needed by topology changes, adds owned SDAM discovery and monitoring, routes writes and reads through replica-set server selection, and proves real primary stepdown/re-election without recreating the client.
+
+### Added
+
+- CMAP-style pool monitoring events for pool open/close/clear, connection creation/readiness/close, checkout start/failure/success, and check-in.
+- Pool sizing/lifecycle controls covering `minPoolSize`, `maxPoolSize`, `maxConnecting`, `maxIdleTimeMS`, generation clearing, stale-checkout rejection, and bounded saturated checkout.
+- Deterministic managed shutdown that stops and joins heartbeat work, rejects new operations, closes read/write pools, and preserves active-handle checks.
+- An owned SDAM topology model with standalone/replica-set/sharded/load-balanced topology states and per-server descriptions.
+- Replica-set discovery from hello `hosts`, `passives`, `arbiters`, `primary`, and `me`, including requested set-name validation.
+- Dedicated periodic hello monitoring with RTT measurement and smoothed RTT tracking.
+- Primary/write selection with `serverSelectionTimeoutMS`.
+- Read selection for `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, and `nearest`, including tag sets, max-staleness filtering, and `localThresholdMS` latency windows.
+- Per-server read pools so secondary reads do not repurpose the primary write pool.
+- OP_MSG `$readPreference` propagation for selected non-primary reads.
+- Real three-member replica-set integration coverage for discovery, secondary reads, concurrent shared-client selection, primary stepdown, replacement election, pool generation clearing, and resumed writes without recreating `RuntimeClient`.
+- Expanded specification-harness reporting with explicit `supported`, `local_bridge`, and `deferred` dispositions for honest CMAP/SDAM coverage status.
+- A complete `make test` sequence that includes CMAP, SDAM/failover, and Deez-facing readiness in addition to the existing unit/spec/standalone/TLS/transaction gates.
+
+### Fixed
+
+- `RuntimeClient` no longer treats a local `WaitQueueTimeout` as evidence that the selected primary is bad; saturated checkout failure does not spuriously clear the pool.
+- Secondary reads now carry the required wire-level read-preference metadata instead of selecting a secondary and then sending a primary-style command.
+- Read-pool teardown uses the mutable Zig 0.16 ArrayList lifecycle required by `deinit`.
+- SDAM RTT timing matches Zig 0.16's `Timestamp.untilNow()` API.
+- The real primary-stepdown test uses MongoDB's election-handoff path rather than a forced stepdown whose default election timeout could race the test deadline.
+
+### Validated release gates
+
+- macOS Apple Silicon with Homebrew Zig 0.16.0_1: full `make test` passed.
+- Linux/Fly Docker validation passed.
+- GitHub Actions Zig 0.16 passed.
+- GitHub Actions live TLS/SCRAM, transactions/CMAP, and three-member SDAM passed.
+- Deez `main` passed both `zig build test --fork=../bongo` and `zig build mongo-integration-test --fork=../bongo` against the exact v0.5 candidate.
+
+### Current limitations
+
+- v0.5 is a replica-set runtime milestone; complete sharded/mongos support (#64) and load-balanced mode (#65) remain future work.
+- Full retryable reads/writes and complete transaction retry/error-label behavior remain incomplete (#70, #71, #75).
+- Complete public/server-session and causal-consistency behavior remains incomplete (#66-#69).
+- The specification harness includes local CMAP/SDAM bridge tests but does not yet ingest the full official MongoDB fixture corpus; #96 remains open.
+- SDAM uses periodic hello polling and does not yet claim the complete upstream monitoring specification surface.
+- Zig 0.16 still does not expose the client-certificate/private-key TLS path needed for built-in mutual TLS and end-to-end `MONGODB-X509`.
+- SCRAM-SHA-256 password preparation still supports printable ASCII rather than complete SASLprep coverage.
+- Wire compression remains deferred; URI compressor options are parsed but `OP_COMPRESSED` is not enabled.
+- Typed BSON struct decoding and the broader BSON ergonomics roadmap remain future work.
+
 ## 0.4.0 — 2026-08-20
 
 Bongo 0.4.0 hardens the managed `RuntimeClient` for real application use on Zig 0.16, with safer failover, explicit connection ownership, concurrent-client synchronization, stronger handshake/error inspection, and a condition-based bounded pool wait queue.
