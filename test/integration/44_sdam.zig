@@ -207,15 +207,26 @@ fn stepDown(io: std.Io, allocator: std.mem.Allocator, port: u16) !void {
     const request = try bongo.mongo.op_msg.encodeCommand(
         allocator,
         .{
-            .replSetStepDown = @as(i32, 10),
-            .force = true,
+            .replSetStepDown = @as(i32, 30),
+            .secondaryCatchUpPeriodSecs = @as(i32, 5),
             .@"$db" = "admin",
         },
         .{ .request_id = 65000 },
     );
     defer allocator.free(request);
-    const response = connection.request(allocator, request) catch return;
-    allocator.free(response);
+    const response = try connection.request(allocator, request);
+    defer allocator.free(response);
+
+    const message = try bongo.mongo.op_msg.decode(response);
+    const body = try message.body();
+    const ok = (try bongo.bson.Reader.get(body, "ok")) orelse return error.StepDownFailed;
+    const succeeded = switch (ok) {
+        .double => |value| value == 1.0,
+        .int32 => |value| value == 1,
+        .int64 => |value| value == 1,
+        else => false,
+    };
+    if (!succeeded) return error.StepDownFailed;
 }
 
 fn sleepMs(io: std.Io, milliseconds: i64) void {
