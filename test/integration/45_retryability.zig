@@ -2,6 +2,7 @@ const std = @import("std");
 const bongo = @import("bongo");
 
 const ports = [_]u16{ 27021, 27022, 27023 };
+const replica_uri = "mongodb://localhost:27021,localhost:27022,localhost:27023";
 
 test "45 - retryable find survives upstream retryable-read server error" {
     const io = std.testing.io;
@@ -12,7 +13,7 @@ test "45 - retryable find survives upstream retryable-read server error" {
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_retry_read?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&retryReads=true",
+        replica_uri ++ "/bongo_retry_read?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&retryReads=true",
         .{},
     );
     defer client.deinit();
@@ -45,7 +46,7 @@ test "45 - retryable insert reuses logical write identity and succeeds" {
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_retry_write?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&retryWrites=true",
+        replica_uri ++ "/bongo_retry_write?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&retryWrites=true",
         .{},
     );
     defer client.deinit();
@@ -77,7 +78,7 @@ test "45 - commit retries UnknownTransactionCommitResult with same transaction" 
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_retry_commit?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
+        replica_uri ++ "/bongo_retry_commit?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
         .{},
     );
     defer client.deinit();
@@ -120,7 +121,7 @@ test "45 - shutdown waits for a live secondary read handle" {
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_shutdown_read?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
+        replica_uri ++ "/bongo_shutdown_read?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
         .{},
     );
     var client_live = true;
