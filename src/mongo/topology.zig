@@ -63,8 +63,7 @@ pub fn handshake(
 }
 
 /// Backward-compatible name used by RuntimeClient for a newly-created socket.
-/// RuntimeClient does not yet perform background topology monitoring, so every
-/// topology probe today is the connection's initial handshake.
+/// Background SDAM monitoring uses dedicated subsequent `hello` probes.
 pub fn hello(
     transport: *Transport,
     allocator: Allocator,
@@ -98,7 +97,7 @@ fn encodeHandshake(
 ) ![]u8 {
     const driver = .{
         .name = "bongo",
-        .version = "0.4.0-dev",
+        .version = "0.5.0",
     };
     const os = .{
         .@"type" = osType(),
