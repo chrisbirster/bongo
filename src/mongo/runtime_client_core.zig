@@ -2,6 +2,7 @@ const std = @import("std");
 const auth_transport = @import("auth_transport.zig");
 const bson = @import("../bson.zig");
 const command_response = @import("command_response.zig");
+const error_response = @import("error_response.zig");
 const Connection = @import("connection.zig").Connection;
 const crud = @import("crud.zig");
 const find_and_modify = @import("find_and_modify.zig");
@@ -11,6 +12,7 @@ const op_msg = @import("op_msg.zig");
 const operation_timeout = @import("operation_timeout.zig");
 const pool_mod = @import("pool.zig");
 const pool_wait = @import("pool_wait.zig");
+const retryable_write = @import("retryable_write.zig");
 const Pool = pool_mod.Pool;
 const PoolHandle = pool_mod.Handle;
 const session_mod = @import("session.zig");
@@ -39,6 +41,8 @@ pub const Error = error{
     InvalidCursorResponse,
     UnexpectedResponse,
     CommandFailed,
+    RetryableRead,
+    RetryableWrite,
 };
 
 /// Programmatic CMAP overrides. Null fields inherit from the connection string,
@@ -250,6 +254,112 @@ pub const RuntimeClient = struct {
         return crud.parseDeleteResponse(response, request_id);
     }
 
+    /// Execute one retryable insert attempt. The caller owns `session` and
+    /// reuses it unchanged for any retry so MongoDB can enforce at-most-once
+    /// behavior for the logical write.
+    pub fn insertOneRetryableAttempt(
+        self: *RuntimeClient,
+        database_name: []const u8,
+        collection_name: []const u8,
+        document: anytype,
+        session: *const session_mod.Session,
+    ) !crud.InsertOneResult {
+        try self.beginOperation();
+        defer self.endOperation();
+        try validateNamespace(database_name, collection_name);
+        var transport: ?PoolHandle = try self.checkout();
+        defer self.releaseTransport(&transport);
+        const request_id = self.takeRequestId();
+        const request = try retryable_write.encodeInsertOne(
+            self.allocator,
+            request_id,
+            session,
+            database_name,
+            collection_name,
+            document,
+        );
+        defer self.allocator.free(request);
+        const response = self.requestCheckedOut(&transport, request) catch |err| {
+            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
+            return err;
+        };
+        defer self.allocator.free(response);
+        const status = try error_response.inspect(response, request_id);
+        if (status.retryableWrite()) return error.RetryableWrite;
+        if (!status.ok) return error.CommandFailed;
+        return crud.parseInsertOneResponse(response, request_id);
+    }
+
+    pub fn updateOneRetryableAttempt(
+        self: *RuntimeClient,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update: anytype,
+        upsert: bool,
+        session: *const session_mod.Session,
+    ) !crud.UpdateResult {
+        try self.beginOperation();
+        defer self.endOperation();
+        try validateNamespace(database_name, collection_name);
+        var transport: ?PoolHandle = try self.checkout();
+        defer self.releaseTransport(&transport);
+        const request_id = self.takeRequestId();
+        const request = try retryable_write.encodeUpdateOne(
+            self.allocator,
+            request_id,
+            session,
+            database_name,
+            collection_name,
+            filter,
+            update,
+            upsert,
+        );
+        defer self.allocator.free(request);
+        const response = self.requestCheckedOut(&transport, request) catch |err| {
+            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
+            return err;
+        };
+        defer self.allocator.free(response);
+        const status = try error_response.inspect(response, request_id);
+        if (status.retryableWrite()) return error.RetryableWrite;
+        if (!status.ok) return error.CommandFailed;
+        return crud.parseUpdateResponse(self.allocator, response, request_id);
+    }
+
+    pub fn deleteOneRetryableAttempt(
+        self: *RuntimeClient,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        session: *const session_mod.Session,
+    ) !crud.DeleteResult {
+        try self.beginOperation();
+        defer self.endOperation();
+        try validateNamespace(database_name, collection_name);
+        var transport: ?PoolHandle = try self.checkout();
+        defer self.releaseTransport(&transport);
+        const request_id = self.takeRequestId();
+        const request = try retryable_write.encodeDeleteOne(
+            self.allocator,
+            request_id,
+            session,
+            database_name,
+            collection_name,
+            filter,
+        );
+        defer self.allocator.free(request);
+        const response = self.requestCheckedOut(&transport, request) catch |err| {
+            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
+            return err;
+        };
+        defer self.allocator.free(response);
+        const status = try error_response.inspect(response, request_id);
+        if (status.retryableWrite()) return error.RetryableWrite;
+        if (!status.ok) return error.CommandFailed;
+        return crud.parseDeleteResponse(response, request_id);
+    }
+
     pub fn find(
         self: *RuntimeClient,
         database_name: []const u8,
@@ -338,6 +448,48 @@ pub const RuntimeClient = struct {
         defer self.allocator.free(request);
         const response = try self.requestCheckedOut(&transport, request);
         defer self.allocator.free(response);
+        const bytes = (try find_and_modify.parseDocumentResponse(
+            self.allocator,
+            response,
+            request_id,
+        )) orelse return null;
+        return .{ .allocator = self.allocator, .bytes = bytes };
+    }
+
+    pub fn findOneAndUpdateRetryableAttempt(
+        self: *RuntimeClient,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        update: anytype,
+        upsert: bool,
+        session: *const session_mod.Session,
+    ) !?OwnedDocument {
+        try self.beginOperation();
+        defer self.endOperation();
+        try validateNamespace(database_name, collection_name);
+        var transport: ?PoolHandle = try self.checkout();
+        defer self.releaseTransport(&transport);
+        const request_id = self.takeRequestId();
+        const request = try retryable_write.encodeFindOneAndUpdate(
+            self.allocator,
+            request_id,
+            session,
+            database_name,
+            collection_name,
+            filter,
+            update,
+            upsert,
+        );
+        defer self.allocator.free(request);
+        const response = self.requestCheckedOut(&transport, request) catch |err| {
+            if (error_response.isRetryableTransportError(err)) return error.RetryableWrite;
+            return err;
+        };
+        defer self.allocator.free(response);
+        const status = try error_response.inspect(response, request_id);
+        if (status.retryableWrite()) return error.RetryableWrite;
+        if (!status.ok) return error.CommandFailed;
         const bytes = (try find_and_modify.parseDocumentResponse(
             self.allocator,
             response,
@@ -821,6 +973,7 @@ pub const Transaction = struct {
     transport: ?PoolHandle,
     session: session_mod.Session,
     finished: bool = false,
+    commit_unknown: bool = false,
 
     pub fn insertOne(
         self: *Transaction,
@@ -875,21 +1028,41 @@ pub const Transaction = struct {
     }
 
     pub fn commit(self: *Transaction) !void {
-        const transport = if (self.transport) |*owned| &owned.transport else
-            return error.InvalidTransactionState;
-        var transport_failed = false;
-        transaction_ops.commit(
-            transport,
-            self.client.allocator,
-            &self.session,
-            self.client.takeRequestId(),
-            &transport_failed,
-        ) catch |err| {
-            if (transport_failed) self.client.discardTransport(&self.transport);
-            return err;
-        };
-        self.finished = true;
-        self.release();
+        var retried = false;
+        while (true) {
+            if (self.transport == null) {
+                self.client.pool.clear() catch {};
+                self.client.pool.ready() catch {};
+                self.transport = self.client.checkout() catch {
+                    self.commit_unknown = true;
+                    return error.UnknownTransactionCommitResult;
+                };
+            }
+            const transport = &self.transport.?.transport;
+            var transport_failed = false;
+            transaction_ops.commit(
+                transport,
+                self.client.allocator,
+                &self.session,
+                self.client.takeRequestId(),
+                &transport_failed,
+            ) catch |err| {
+                if (transport_failed) self.client.discardTransport(&self.transport);
+                if (err == error.UnknownTransactionCommitResult and !retried) {
+                    retried = true;
+                    // A retried commit uses majority write concern regardless
+                    // of the original transaction write concern.
+                    self.session.transaction_options.majority_write_concern = true;
+                    continue;
+                }
+                if (err == error.UnknownTransactionCommitResult) self.commit_unknown = true;
+                return err;
+            };
+            self.finished = true;
+            self.commit_unknown = false;
+            self.release();
+            return;
+        }
     }
 
     pub fn abort(self: *Transaction) !void {
@@ -911,7 +1084,7 @@ pub const Transaction = struct {
     }
 
     pub fn deinit(self: *Transaction) void {
-        if (!self.finished and self.transport != null) self.abort() catch {};
+        if (!self.finished and !self.commit_unknown and self.transport != null) self.abort() catch {};
         if (self.transport != null) self.release();
         self.client.releaseHandle();
         self.* = undefined;
@@ -937,8 +1110,11 @@ fn parseCursorResponse(
     const message = try op_msg.decode(response_bytes);
     if (message.header.response_to != expected_response_to) return error.UnexpectedResponse;
     const body = try message.body();
-    const ok = (try bson.Reader.get(body, "ok")) orelse return error.CommandFailed;
-    if (!commandSucceeded(ok)) return error.CommandFailed;
+    const status = try error_response.inspectBody(body);
+    if (!status.ok) {
+        if (status.retryableRead()) return error.RetryableRead;
+        return error.CommandFailed;
+    }
     const cursor_value = (try bson.Reader.get(body, "cursor")) orelse
         return error.InvalidCursorResponse;
     const cursor = switch (cursor_value) {

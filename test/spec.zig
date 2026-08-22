@@ -1,5 +1,8 @@
 const std = @import("std");
-const bongo = @import("bongo");
+\ntest "pinned upstream retryable read fixture is executable input" {\n    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, upstream_retryable_reads, .{});\n    defer parsed.deinit();\n    const root = parsed.value.object;\n    try std.testing.expectEqualStrings("find-serverErrors", root.get("description").?.string);\n    const tests = root.get("tests").?.array.items;\n    var found_shutdown = false;\n    var found_not_primary = false;\n    for (tests) |case| {\n        const description = case.object.get("description").?.string;\n        if (std.mem.indexOf(u8, description, "ShutdownInProgress") != null) found_shutdown = true;\n        if (std.mem.indexOf(u8, description, "NotWritablePrimary") != null) found_not_primary = true;\n    }\n    try std.testing.expect(found_shutdown);\n    try std.testing.expect(found_not_primary);\n}\n\ntest "pinned upstream retryable write fixture is executable input" {\n    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, upstream_retryable_writes, .{});\n    defer parsed.deinit();\n    const root = parsed.value.object;\n    try std.testing.expectEqualStrings("insertOne", root.get("description").?.string);\n    try std.testing.expect(root.get("tests").?.array.items.len > 0);\n}\nconst bongo = @import("bongo");
+
+const upstream_retryable_reads = @embedFile("spec-fixtures/retryable-reads/find-serverErrors.json");
+const upstream_retryable_writes = @embedFile("spec-fixtures/retryable-writes/insertOne.json");
 
 const Disposition = enum {
     supported,

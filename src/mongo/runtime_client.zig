@@ -1,5 +1,6 @@
 const std = @import("std");
 const core_mod = @import("runtime_client_core.zig");
+const error_response = @import("error_response.zig");
 const pool_mod = @import("pool.zig");
 const read_preference = @import("read_preference.zig");
 const read_runtime_mod = @import("runtime_read.zig");
@@ -18,6 +19,10 @@ pub const Error = core_mod.Error || error{
     ReadRuntimeActiveHandles,
 };
 
+fn isRetryableReadFailure(err: anyerror) bool {
+    return err == error.RetryableRead or error_response.isRetryableTransportError(err);
+}
+
 /// v0.5 keeps the v0.4 CMAP override surface source-compatible. Read
 /// preference is configured by URI (`readPreference`, `maxStalenessSeconds`)
 /// or explicitly per read through `findWithReadPreference`.
@@ -26,6 +31,8 @@ pub const Options = struct {
     max_pool_size: ?usize = null,
     max_connecting: ?usize = null,
     max_idle_time_ms: ?u64 = null,
+    retry_reads: ?bool = null,
+    retry_writes: ?bool = null,
 };
 
 pub const OwnedDocument = core_mod.OwnedDocument;
@@ -79,6 +86,8 @@ pub const RuntimeClient = struct {
     supports_sessions: bool = false,
     supports_transactions: bool = false,
     selected_host: usize = 0,
+    retry_reads: bool = true,
+    retry_writes: bool = true,
 
     pub fn connectUri(
         io: Io,
@@ -119,6 +128,8 @@ pub const RuntimeClient = struct {
             .supports_sessions = core.supports_sessions,
             .supports_transactions = core.supports_transactions,
             .selected_host = core.selected_host,
+            .retry_reads = options.retry_reads orelse core.connection_options.retry_reads,
+            .retry_writes = options.retry_writes orelse core.connection_options.retry_writes,
         };
         try self.syncWriteTarget();
         return self;
@@ -203,11 +214,33 @@ pub const RuntimeClient = struct {
     ) !@import("crud.zig").InsertOneResult {
         try self.beginOperation();
         defer self.endOperation();
-        try self.syncWriteTarget();
-        return self.core.insertOne(database_name, collection_name, document) catch |err| {
-            self.notePrimaryOperationFailure(err);
-            return err;
-        };
+        if (!self.canRetryWrites()) {
+            try self.syncWriteTarget();
+            return self.core.insertOne(database_name, collection_name, document) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                return err;
+            };
+        }
+        var session = session_mod.Session.init(self.io);
+        _ = try session.nextTransactionNumber();
+        var retried = false;
+        while (true) {
+            try self.syncWriteTarget();
+            const result = self.core.insertOneRetryableAttempt(
+                database_name,
+                collection_name,
+                document,
+                &session,
+            ) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                if (err == error.RetryableWrite and !retried) {
+                    retried = true;
+                    continue;
+                }
+                return err;
+            };
+            return result;
+        }
     }
 
     pub fn updateOne(
@@ -220,11 +253,35 @@ pub const RuntimeClient = struct {
     ) !@import("crud.zig").UpdateResult {
         try self.beginOperation();
         defer self.endOperation();
-        try self.syncWriteTarget();
-        return self.core.updateOne(database_name, collection_name, filter, update, upsert) catch |err| {
-            self.notePrimaryOperationFailure(err);
-            return err;
-        };
+        if (!self.canRetryWrites()) {
+            try self.syncWriteTarget();
+            return self.core.updateOne(database_name, collection_name, filter, update, upsert) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                return err;
+            };
+        }
+        var session = session_mod.Session.init(self.io);
+        _ = try session.nextTransactionNumber();
+        var retried = false;
+        while (true) {
+            try self.syncWriteTarget();
+            const result = self.core.updateOneRetryableAttempt(
+                database_name,
+                collection_name,
+                filter,
+                update,
+                upsert,
+                &session,
+            ) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                if (err == error.RetryableWrite and !retried) {
+                    retried = true;
+                    continue;
+                }
+                return err;
+            };
+            return result;
+        }
     }
 
     pub fn deleteOne(
@@ -235,11 +292,33 @@ pub const RuntimeClient = struct {
     ) !@import("crud.zig").DeleteResult {
         try self.beginOperation();
         defer self.endOperation();
-        try self.syncWriteTarget();
-        return self.core.deleteOne(database_name, collection_name, filter) catch |err| {
-            self.notePrimaryOperationFailure(err);
-            return err;
-        };
+        if (!self.canRetryWrites()) {
+            try self.syncWriteTarget();
+            return self.core.deleteOne(database_name, collection_name, filter) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                return err;
+            };
+        }
+        var session = session_mod.Session.init(self.io);
+        _ = try session.nextTransactionNumber();
+        var retried = false;
+        while (true) {
+            try self.syncWriteTarget();
+            const result = self.core.deleteOneRetryableAttempt(
+                database_name,
+                collection_name,
+                filter,
+                &session,
+            ) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                if (err == error.RetryableWrite and !retried) {
+                    retried = true;
+                    continue;
+                }
+                return err;
+            };
+            return result;
+        }
     }
 
     pub fn find(
@@ -269,30 +348,22 @@ pub const RuntimeClient = struct {
         try self.beginOperation();
         defer self.endOperation();
 
-        var selected = try self.sdam_manager.selectRead(self.allocator, preference);
-        defer selected.deinit();
-
-        var primary = self.sdam_manager.selectWrite(self.allocator) catch null;
-        defer if (primary) |*snapshot| snapshot.deinit();
-        if (primary) |snapshot| {
-            if (std.mem.eql(u8, snapshot.address, selected.address)) {
-                try self.syncWriteTargetSnapshot(selected);
-                return .{ .primary = try self.core.find(
-                    database_name,
-                    collection_name,
-                    filter,
-                    options,
-                ) };
-            }
+        var retried = false;
+        while (true) {
+            const cursor = self.findAttempt(
+                database_name,
+                collection_name,
+                filter,
+                options,
+                preference,
+            ) catch |err| {
+                if (!self.retry_reads or retried or !isRetryableReadFailure(err)) return err;
+                retried = true;
+                self.noteReadOperationFailure();
+                continue;
+            };
+            return cursor;
         }
-
-        return .{ .selected_read = try self.read_runtime.find(
-            selected,
-            database_name,
-            collection_name,
-            filter,
-            options,
-        ) };
     }
 
     pub fn findOne(
@@ -325,17 +396,41 @@ pub const RuntimeClient = struct {
     ) !?OwnedDocument {
         try self.beginOperation();
         defer self.endOperation();
-        try self.syncWriteTarget();
-        return self.core.findOneAndUpdate(
-            database_name,
-            collection_name,
-            filter,
-            update,
-            upsert,
-        ) catch |err| {
-            self.notePrimaryOperationFailure(err);
-            return err;
-        };
+        if (!self.canRetryWrites()) {
+            try self.syncWriteTarget();
+            return self.core.findOneAndUpdate(
+                database_name,
+                collection_name,
+                filter,
+                update,
+                upsert,
+            ) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                return err;
+            };
+        }
+        var session = session_mod.Session.init(self.io);
+        _ = try session.nextTransactionNumber();
+        var retried = false;
+        while (true) {
+            try self.syncWriteTarget();
+            const result = self.core.findOneAndUpdateRetryableAttempt(
+                database_name,
+                collection_name,
+                filter,
+                update,
+                upsert,
+                &session,
+            ) catch |err| {
+                self.notePrimaryOperationFailure(err);
+                if (err == error.RetryableWrite and !retried) {
+                    retried = true;
+                    continue;
+                }
+                return err;
+            };
+            return result;
+        }
     }
 
     pub fn createIndex(
@@ -363,6 +458,55 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         try self.syncWriteTarget();
         return self.core.beginTransaction(options);
+    }
+
+    fn canRetryWrites(self: *RuntimeClient) bool {
+        if (!self.retry_writes or !self.supports_sessions) return false;
+        return switch (self.topologyType()) {
+            .replica_set_no_primary, .replica_set_with_primary, .sharded, .load_balanced => true,
+            .unknown, .single => false,
+        };
+    }
+
+    fn findAttempt(
+        self: *RuntimeClient,
+        database_name: []const u8,
+        collection_name: []const u8,
+        filter: anytype,
+        options: anytype,
+        preference: ?read_preference.ReadPreference,
+    ) !Cursor {
+        var selected = try self.sdam_manager.selectRead(self.allocator, preference);
+        defer selected.deinit();
+
+        var primary = self.sdam_manager.selectWrite(self.allocator) catch null;
+        defer if (primary) |*snapshot| snapshot.deinit();
+        if (primary) |snapshot| {
+            if (std.mem.eql(u8, snapshot.address, selected.address)) {
+                try self.syncWriteTargetSnapshot(selected);
+                return .{ .primary = try self.core.find(
+                    database_name,
+                    collection_name,
+                    filter,
+                    options,
+                ) };
+            }
+        }
+
+        return .{ .selected_read = try self.read_runtime.find(
+            selected,
+            database_name,
+            collection_name,
+            filter,
+            options,
+        ) };
+    }
+
+    fn noteReadOperationFailure(self: *RuntimeClient) void {
+        self.core.pool.clear() catch {};
+        self.read_runtime.clearForRetry();
+        self.sdam_manager.scan() catch {};
+        self.core.pool.ready() catch {};
     }
 
     fn beginOperation(self: *RuntimeClient) Error!void {
