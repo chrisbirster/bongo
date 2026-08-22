@@ -1,6 +1,46 @@
 const std = @import("std");
 const bongo = @import("bongo");
 
+const MonitorKind = enum {
+    pool_opened,
+    pool_closed,
+    pool_cleared,
+    connection_created,
+    connection_ready,
+    connection_closed,
+    checkout_started,
+    checkout_failed,
+    checked_out,
+    checked_in,
+};
+
+const MonitorCollector = struct {
+    kinds: [32]MonitorKind = undefined,
+    len: usize = 0,
+
+    fn callback(context: ?*anyopaque, event: bongo.mongo.Pool.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        std.debug.assert(self.len < self.kinds.len);
+        self.kinds[self.len] = switch (event) {
+            .pool_opened => .pool_opened,
+            .pool_closed => .pool_closed,
+            .pool_cleared => .pool_cleared,
+            .connection_created => .connection_created,
+            .connection_ready => .connection_ready,
+            .connection_closed => .connection_closed,
+            .checkout_started => .checkout_started,
+            .checkout_failed => .checkout_failed,
+            .checked_out => .checked_out,
+            .checked_in => .checked_in,
+        };
+        self.len += 1;
+    }
+
+    fn monitor(self: *@This()) bongo.mongo.Pool.Monitor {
+        return .{ .context = self, .callback = callback };
+    }
+};
+
 test "43 - pool clear invalidates checked-out generation" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -37,16 +77,12 @@ test "43 - pool clear invalidates checked-out generation" {
     try std.testing.expectEqual(@as(usize, 1), after_clear.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_clear.idle);
 
-    // Returning the old-generation transaction connection must destroy it,
-    // not make it available to the next checkout.
     transaction.deinit();
     const after_stale_return = client.pool.stats();
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.total);
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.checked_out);
     try std.testing.expectEqual(@as(usize, 0), after_stale_return.idle);
 
-    // SDAM owns this transition in the production path. The focused CMAP test
-    // drives it directly so a fresh generation can service the next checkout.
     try client.pool.ready();
     _ = try client.insertOne(database, collection, .{
         ._id = @as(i64, 63002),
@@ -107,6 +143,69 @@ test "43 - maxPoolSize zero is unlimited" {
     try std.testing.expectEqual(@as(usize, 3), snapshot.checked_out);
 }
 
+test "43 - CMAP monitor emits deterministic checkout and lifecycle events" {
+    const database = "bongo_cmap_monitor";
+    const collection = "cards";
+
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_monitor?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+    defer client.deinit();
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
+
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63004) });
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .checkout_started, .checked_out, .checked_in },
+        collector.kinds[0..collector.len],
+    );
+
+    try client.pool.clear();
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{
+            .pool_opened,
+            .checkout_started,
+            .checked_out,
+            .checked_in,
+            .connection_closed,
+            .pool_cleared,
+        },
+        collector.kinds[0..collector.len],
+    );
+
+    try client.pool.ready();
+    _ = try client.insertOne(database, collection, .{
+        ._id = @as(i64, 63004),
+        .value = @as(i32, 4),
+    });
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{
+            .pool_opened,
+            .checkout_started,
+            .checked_out,
+            .checked_in,
+            .connection_closed,
+            .pool_cleared,
+            .checkout_started,
+            .connection_created,
+            .connection_ready,
+            .checked_out,
+            .checked_in,
+        },
+        collector.kinds[0..collector.len],
+    );
+
+    client.pool.clearMonitor();
+    _ = try client.deleteOne(database, collection, .{ ._id = @as(i64, 63004) });
+}
+
 test "43 - timeoutMS bounds a saturated pool checkout" {
     const database = "bongo_cmap_wait";
     const collection = "cards";
@@ -119,10 +218,11 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
     );
     defer client.deinit();
 
-    // Hold the only pooled connection. The next operation cannot create a
-    // second connection and must leave the CMAP wait queue at timeoutMS.
     var transaction = try client.beginTransaction(.{});
     defer transaction.deinit();
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
 
     try std.testing.expectError(
         error.WaitQueueTimeout,
@@ -132,9 +232,35 @@ test "43 - timeoutMS bounds a saturated pool checkout" {
         }),
     );
 
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .checkout_started, .checkout_failed },
+        collector.kinds[0..collector.len],
+    );
+
     const snapshot = client.pool.stats();
     try std.testing.expectEqual(@as(usize, 1), snapshot.total);
     try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
     try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
     try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
+}
+
+test "43 - CMAP monitor emits pool close lifecycle" {
+    var client = try bongo.RuntimeClient.connectUri(
+        std.testing.io,
+        std.testing.allocator,
+        "mongodb://localhost:27019/bongo_cmap_close?replicaSet=rs0",
+        .{ .max_pool_size = 1 },
+    );
+
+    var collector: MonitorCollector = .{};
+    client.pool.setMonitor(collector.monitor());
+    client.requestShutdown();
+
+    try std.testing.expectEqualSlices(
+        MonitorKind,
+        &.{ .pool_opened, .connection_closed, .pool_closed },
+        collector.kinds[0..collector.len],
+    );
+    try client.deinitChecked();
 }
