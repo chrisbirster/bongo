@@ -26,6 +26,21 @@ jobs:
         with:
           ref: bongo-0.6.0-rapid
           fetch-depth: 0
+      - name: Fix Zig 0.16 read-pool retry iteration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/mongo/runtime_read.zig")
+          text = path.read_text()
+          old = "for (self.pools.items) |*server_pool| {"
+          new = "for (self.pools.items) |server_pool| {"
+          if old in text:
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one retry loop anchor, found {text.count(old)}")
+              path.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit("retry loop anchor not found")
+          PY
       - name: Apply idempotent v0.6 finalization patch
         run: python3 tools/v06_finalize_patch.py
       - name: Commit validation and reliability changes
@@ -37,5 +52,5 @@ jobs:
             echo "No patch changes to commit"
             exit 0
           fi
-          git commit -m "Finalize v0.6 retry and malformed-wire validation"
+          git commit -m "Fix read-pool retry iteration"
           git push origin HEAD:bongo-0.6.0-rapid
