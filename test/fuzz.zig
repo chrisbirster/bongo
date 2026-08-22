@@ -1,8 +1,8 @@
 const std = @import("std");
 const bongo = @import("bongo");
 
-/// Deterministic fuzz-style mutation gate. This intentionally does not depend
-/// on an external fuzzer runtime so it runs in every normal Zig/CI build.
+// Deterministic fuzz-style mutation gate. This intentionally does not depend
+// on an external fuzzer runtime so it runs in every normal Zig/CI build.
 test "malformed BSON and OP_MSG never panic or read out of bounds" {
     var state: u64 = 0x6b6f_6e67_6f2d_3036;
     var bytes: [512]u8 = undefined;
