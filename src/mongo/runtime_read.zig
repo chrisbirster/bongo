@@ -113,7 +113,7 @@ pub const Runtime = struct {
         var transport: ?PoolHandle = try self.checkout(server_pool);
         errdefer self.releaseTransport(server_pool, &transport);
         const request_id = self.takeRequestId();
-        const request = try find_options.encodeFind(
+        const request = try find_options.encodeFindWithReadPreference(
             self.allocator,
             request_id,
             database_name,
@@ -121,6 +121,7 @@ pub const Runtime = struct {
             filter,
             options,
             null,
+            .secondary,
         );
         defer self.allocator.free(request);
         const response = try self.requestCheckedOut(server_pool, &transport, request);
