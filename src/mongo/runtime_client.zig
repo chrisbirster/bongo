@@ -205,7 +205,7 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         try self.syncWriteTarget();
         return self.core.insertOne(database_name, collection_name, document) catch |err| {
-            self.notePrimaryOperationFailure();
+            self.notePrimaryOperationFailure(err);
             return err;
         };
     }
@@ -222,7 +222,7 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         try self.syncWriteTarget();
         return self.core.updateOne(database_name, collection_name, filter, update, upsert) catch |err| {
-            self.notePrimaryOperationFailure();
+            self.notePrimaryOperationFailure(err);
             return err;
         };
     }
@@ -237,7 +237,7 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         try self.syncWriteTarget();
         return self.core.deleteOne(database_name, collection_name, filter) catch |err| {
-            self.notePrimaryOperationFailure();
+            self.notePrimaryOperationFailure(err);
             return err;
         };
     }
@@ -333,7 +333,7 @@ pub const RuntimeClient = struct {
             update,
             upsert,
         ) catch |err| {
-            self.notePrimaryOperationFailure();
+            self.notePrimaryOperationFailure(err);
             return err;
         };
     }
@@ -350,7 +350,7 @@ pub const RuntimeClient = struct {
         defer self.endOperation();
         try self.syncWriteTarget();
         return self.core.createIndex(database_name, collection_name, key, name, options) catch |err| {
-            self.notePrimaryOperationFailure();
+            self.notePrimaryOperationFailure(err);
             return err;
         };
     }
@@ -432,7 +432,8 @@ pub const RuntimeClient = struct {
         return old_len;
     }
 
-    fn notePrimaryOperationFailure(self: *RuntimeClient) void {
+    fn notePrimaryOperationFailure(self: *RuntimeClient, err: anyerror) void {
+        if (err == error.WaitQueueTimeout) return;
         self.core.pool.clear() catch {};
         self.sdam_manager.scan() catch {};
         self.core.pool.ready() catch {};
