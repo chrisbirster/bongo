@@ -26,18 +26,16 @@ jobs:
         with:
           ref: bongo-0.6.0-rapid
           fetch-depth: 0
-      - name: Fix guarded patch anchor
-        run: python3 tools/v06_fix_patch.py
-      - name: Apply deterministic v0.6 patch
-        run: python3 tools/v06_patch.py
-      - name: Commit patched runtime and pinned fixtures
+      - name: Apply v0.6 validation and retry hardening patch
+        run: python3 tools/v06_test_patch.py
+      - name: Commit validation and reliability changes
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src test
+          git add src test build.zig Makefile scripts/ensure-mongo-fixture.sh
           if git diff --cached --quiet; then
             echo "No patch changes to commit"
             exit 0
           fi
-          git commit -m "Implement v0.6 retry reliability core"
+          git commit -m "Add v0.6 retry and malformed-wire validation"
           git push origin HEAD:bongo-0.6.0-rapid
