@@ -20,7 +20,7 @@ jobs:
         if: always()
         run: docker rm -f mongodb-tls >/dev/null 2>&1 || true
 
-  transactions:
+  transactions-cmap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,23 @@ jobs:
         run: bash ./scripts/start-replica-db.sh
       - name: Test sessions and transactions
         run: zig build runtime-integration-test
+      - name: Test CMAP lifecycle
+        run: zig build cmap-integration-test
       - name: Stop replica-set fixture
         if: always()
         run: docker rm -f mongodb-rs >/dev/null 2>&1 || true
+
+  sdam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Start three-member replica-set fixture
+        run: bash ./scripts/ensure-mongo-fixture.sh sdam
+      - name: Test discovery, selection, stress and failover
+        run: zig build sdam-integration-test
+      - name: Stop SDAM fixture
+        if: always()
+        run: docker rm -f mongodb-sdam >/dev/null 2>&1 || true

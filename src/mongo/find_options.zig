@@ -3,6 +3,7 @@ const bson = @import("../bson.zig");
 const command_cursor = @import("command_cursor.zig");
 const op_msg = @import("op_msg.zig");
 const read_concern = @import("read_concern.zig");
+const read_preference = @import("read_preference.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -59,6 +60,33 @@ pub fn encodeFind(
     filter: anytype,
     options: anytype,
     concern: ?read_concern.ReadConcern,
+) ![]u8 {
+    return encodeFindWithReadPreference(
+        allocator,
+        request_id,
+        database_name,
+        collection_name,
+        filter,
+        options,
+        concern,
+        null,
+    );
+}
+
+/// Encode a find command for a server already selected by SDAM.
+///
+/// OP_MSG has no SecondaryOk flag. For any non-primary mode MongoDB requires
+/// the `$readPreference` global command argument so a replica-set member can
+/// validate that its role still matches the driver's selection decision.
+pub fn encodeFindWithReadPreference(
+    allocator: Allocator,
+    request_id: i32,
+    database_name: []const u8,
+    collection_name: []const u8,
+    filter: anytype,
+    options: anytype,
+    concern: ?read_concern.ReadConcern,
+    preference_mode: ?read_preference.Mode,
 ) ![]u8 {
     const Options = @TypeOf(options);
 
@@ -127,6 +155,16 @@ pub fn encodeFind(
         const document = try read_concern.encode(allocator, configured);
         defer allocator.free(document);
         try writer.writeDocument("readConcern", document);
+    }
+
+    if (preference_mode) |mode| {
+        if (mode != .primary) {
+            const document = try bson.encode(allocator, .{
+                .mode = mode.wireName(),
+            });
+            defer allocator.free(document);
+            try writer.writeDocument("$readPreference", document);
+        }
     }
 
     try writer.writeString("$db", database_name);
@@ -239,6 +277,48 @@ test "advanced find options are encoded only when supplied" {
         (try bson.Reader.get(variables, "threshold")).?.int32,
     );
     try std.testing.expect((try bson.Reader.get(body, "sort")) == null);
+}
+
+test "non-primary find encodes OP_MSG read preference" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeFindWithReadPreference(
+        allocator,
+        67,
+        "test",
+        "users",
+        .{},
+        .{},
+        null,
+        .secondary,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    const preference = (try bson.Reader.get(body, "$readPreference")).?.document;
+    try std.testing.expectEqualStrings(
+        "secondary",
+        (try bson.Reader.get(preference, "mode")).?.string,
+    );
+}
+
+test "primary find omits OP_MSG read preference" {
+    const allocator = std.testing.allocator;
+
+    const request = try encodeFindWithReadPreference(
+        allocator,
+        68,
+        "test",
+        "users",
+        .{},
+        .{},
+        null,
+        .primary,
+    );
+    defer allocator.free(request);
+
+    const body = try (try op_msg.decode(request)).body();
+    try std.testing.expect((try bson.Reader.get(body, "$readPreference")) == null);
 }
 
 test "find options reject negative numeric controls" {

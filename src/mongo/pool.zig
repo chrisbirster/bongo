@@ -1,275 +1,315 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const Transport = @import("transport.zig").Transport;
+const core_mod = @import("pool_core.zig");
+const monitor_mod = @import("cmap_monitor.zig");
 
-const Allocator = std.mem.Allocator;
-const Io = std.Io;
+pub const Error = core_mod.Error;
+pub const State = core_mod.State;
+pub const Handle = core_mod.Handle;
+pub const CreatePermit = core_mod.CreatePermit;
+pub const Stats = core_mod.Stats;
+pub const Event = monitor_mod.Event;
+pub const Monitor = monitor_mod.Monitor;
+pub const ConnectionClosedReason = monitor_mod.ConnectionClosedReason;
+pub const CheckoutFailedReason = monitor_mod.CheckoutFailedReason;
 
-pub const Error = error{
-    PoolExhausted,
-    PoolClosed,
-    InvalidMaxSize,
+pub const Options = struct {
+    min_size: usize = 0,
+    max_size: usize = 100,
+    max_connecting: usize = 2,
+    max_idle_time_ms: u64 = 0,
+    monitor: ?monitor_mod.Monitor = null,
 };
 
-pub const State = enum {
-    ready,
-    closing,
-    closed,
-};
-
-pub const Stats = struct {
-    state: State,
-    max_size: usize,
-    total: usize,
-    idle: usize,
-    checked_out: usize,
-    waiters: usize,
-};
-
-/// Bounded reusable transport pool with explicit lifecycle, accounting, and a
-/// Zig 0.16 `Io.Condition` wait queue for callers blocked at maxPoolSize.
+/// Observable CMAP facade around the validated pool core.
+///
+/// The core implementation remains isolated in `pool_core.zig`; callbacks are
+/// emitted only after core methods return, so user monitoring code never runs
+/// while the pool core mutex is held.
 pub const Pool = struct {
-    allocator: Allocator,
-    io: Io,
-    max_size: usize,
-    mutex: Io.Mutex = Io.Mutex.init,
-    condition: Io.Condition = std.mem.zeroes(Io.Condition),
-    state: State = .ready,
-    created: usize = 0,
-    checked_out: usize = 0,
-    waiters: usize = 0,
-    idle: std.ArrayList(Transport) = .empty,
+    pub const Event = monitor_mod.Event;
+    pub const Monitor = monitor_mod.Monitor;
 
-    pub fn init(io: Io, allocator: Allocator, max_size: usize) Error!Pool {
-        if (max_size == 0) return error.InvalidMaxSize;
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .max_size = max_size,
+    core: core_mod.Pool,
+    monitor: ?monitor_mod.Monitor = null,
+    closed_emitted: bool = false,
+
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, max_size: usize) Error!Pool {
+        return initWithOptions(io, allocator, .{ .max_size = max_size });
+    }
+
+    pub fn initWithOptions(
+        io: std.Io,
+        allocator: std.mem.Allocator,
+        options: Options,
+    ) Error!Pool {
+        var self: Pool = .{
+            .core = try core_mod.Pool.initWithOptions(io, allocator, .{
+                .min_size = options.min_size,
+                .max_size = options.max_size,
+                .max_connecting = options.max_connecting,
+                .max_idle_time_ms = options.max_idle_time_ms,
+            }),
+            .monitor = options.monitor,
         };
+        if (self.monitor != null) self.emitOpened();
+        return self;
+    }
+
+    pub fn setMonitor(self: *Pool, monitor: monitor_mod.Monitor) void {
+        self.monitor = monitor;
+        self.closed_emitted = false;
+        self.emitOpened();
+    }
+
+    pub fn clearMonitor(self: *Pool) void {
+        self.monitor = null;
+    }
+
+    pub fn ready(self: *Pool) Error!void {
+        return self.core.ready();
     }
 
     pub fn deinit(self: *Pool) void {
         self.close();
-        self.mutex.lockUncancelable(self.io);
-        std.debug.assert(self.checked_out == 0);
-        std.debug.assert(self.waiters == 0);
-        self.idle.deinit(self.allocator);
-        self.mutex.unlock(self.io);
+        self.core.deinit();
+        self.clearThreadContext();
         self.* = undefined;
     }
 
-    /// Begin pool shutdown. Idle transports are closed immediately and all
-    /// waiters are woken. Checked-out transports are closed by RuntimeClient
-    /// when they are returned; the pool reaches `.closed` when none remain.
     pub fn close(self: *Pool) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.state == .closed) return;
-        self.state = .closing;
-
-        const idle_count = self.idle.items.len;
-        for (self.idle.items) |*transport| transport.deinit();
-        self.idle.clearRetainingCapacity();
-        std.debug.assert(self.created >= idle_count);
-        self.created -= idle_count;
-        if (self.checked_out == 0) self.state = .closed;
-        self.condition.broadcast(self.io);
+        const before = self.core.stats();
+        self.core.close();
+        if (before.idle > 0) {
+            self.emit(.{ .connection_closed = .{
+                .generation = before.generation,
+                .count = before.idle,
+                .reason = .pool_closed,
+            } });
+        }
+        if (!self.closed_emitted) {
+            self.closed_emitted = true;
+            self.emit(.{ .pool_closed = .{ .generation = before.generation } });
+        }
+        if (checkout_pool == self) self.checkoutFailed(.pool_closed);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
-    pub fn take(self: *Pool) ?Transport {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.state != .ready or self.idle.items.len == 0) return null;
-        self.checked_out += 1;
-        return self.idle.pop().?;
+    pub fn clear(self: *Pool) Error!void {
+        const before = self.core.stats();
+        try self.core.clear();
+        const generation = self.core.generationSnapshot();
+        if (before.idle > 0) {
+            self.emit(.{ .connection_closed = .{
+                .generation = before.generation,
+                .count = before.idle,
+                .reason = .pool_cleared,
+            } });
+        }
+        self.emit(.{ .pool_cleared = .{ .generation = generation } });
+        if (checkout_pool == self) self.checkoutFailed(.pool_cleared);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+    }
+
+    pub fn generationSnapshot(self: *Pool) u64 {
+        return self.core.generationSnapshot();
+    }
+
+    pub fn take(self: *Pool) ?Handle {
+        if (checkout_pool != self) {
+            checkout_pool = self;
+            self.emit(.{ .checkout_started = .{
+                .generation = self.core.generationSnapshot(),
+            } });
+        }
+
+        const before = self.core.stats();
+        const result = self.core.take();
+        const after = self.core.stats();
+        self.emitIdleReclamation(before, after);
+        if (result) |handle| {
+            self.emit(.{ .checked_out = .{ .generation = handle.generation } });
+            checkout_pool = null;
+        }
+        return result;
+    }
+
+    pub fn tryStartCreate(self: *Pool) Error!CreatePermit {
+        const permit = self.core.tryStartCreate() catch |err| {
+            if (err == error.PoolCleared and checkout_pool == self) {
+                self.checkoutFailed(.pool_cleared);
+            } else if (err == error.PoolClosed and checkout_pool == self) {
+                self.checkoutFailed(.pool_closed);
+            }
+            if (maintenance_pool == self and err != error.PoolExhausted and err != error.ConnectLimitReached) {
+                maintenance_pool = null;
+            }
+            return err;
+        };
+        self.emit(.{ .connection_created = .{ .generation = permit.generation } });
+        return permit;
+    }
+
+    pub fn finishCreate(self: *Pool, permit: CreatePermit) Error!void {
+        self.core.finishCreate(permit) catch |err| {
+            const reason: ConnectionClosedReason = switch (err) {
+                error.PoolCleared => .pool_cleared,
+                error.PoolClosed => .pool_closed,
+                else => .connection_error,
+            };
+            self.emit(.{ .connection_closed = .{
+                .generation = permit.generation,
+                .count = 1,
+                .reason = reason,
+            } });
+            if (checkout_pool == self) {
+                self.checkoutFailed(switch (err) {
+                    error.PoolCleared => .pool_cleared,
+                    error.PoolClosed => .pool_closed,
+                    else => .connection_error,
+                });
+            }
+            if (maintenance_pool == self) maintenance_pool = null;
+            if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+            return err;
+        };
+
+        self.emit(.{ .connection_ready = .{ .generation = permit.generation } });
+        if (checkout_pool == self and maintenance_pool != self) {
+            self.emit(.{ .checked_out = .{ .generation = permit.generation } });
+            checkout_pool = null;
+        } else {
+            suppress_next_checkin_pool = self;
+        }
+    }
+
+    pub fn cancelCreate(self: *Pool, permit: CreatePermit) void {
+        self.core.cancelCreate(permit);
+        self.emit(.{ .connection_closed = .{
+            .generation = permit.generation,
+            .count = 1,
+            .reason = .connection_error,
+        } });
+        if (checkout_pool == self) self.checkoutFailed(.connection_error);
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn canCreate(self: *Pool) bool {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.state == .ready and self.created < self.max_size;
+        return self.core.canCreate();
     }
 
-    /// Block while the pool is full and no idle transport is available.
-    /// Callers retry `take`/`canCreate` after this returns because wakeups may
-    /// be spurious and another waiter may win the available transport.
+    pub fn needsMinConnections(self: *Pool) bool {
+        const before = self.core.stats();
+        const result = self.core.needsMinConnections();
+        const after = self.core.stats();
+        self.emitIdleReclamation(before, after);
+        if (result) {
+            maintenance_pool = self;
+        } else if (maintenance_pool == self) {
+            maintenance_pool = null;
+        }
+        return result;
+    }
+
+    pub fn pruneIdle(self: *Pool) usize {
+        const before = self.core.stats();
+        const removed = self.core.pruneIdle();
+        const after = self.core.stats();
+        self.emitIdleReclamation(before, after);
+        return removed;
+    }
+
     pub fn waitForAvailability(self: *Pool) Error!void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        if (self.state != .ready) return error.PoolClosed;
-        if (self.idle.items.len != 0 or self.created < self.max_size) return;
-
-        self.waiters += 1;
-        defer self.waiters -= 1;
-
-        while (self.state == .ready and
-            self.idle.items.len == 0 and
-            self.created >= self.max_size)
-        {
-            self.condition.waitUncancelable(self.io, &self.mutex);
-        }
-        if (self.state != .ready) return error.PoolClosed;
+        return self.core.waitForAvailability();
     }
 
-    /// Account for a newly-created transport that is immediately checked out.
-    pub fn noteCreated(self: *Pool) Error!void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.state != .ready) return error.PoolClosed;
-        if (self.created >= self.max_size) return error.PoolExhausted;
-        self.created += 1;
-        self.checked_out += 1;
-    }
-
-    /// Return a healthy checked-out transport to the idle pool.
-    pub fn put(self: *Pool, transport: Transport) !void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.state != .ready) return error.PoolClosed;
-        std.debug.assert(self.checked_out > 0);
-        // Append first. If allocation fails, ownership remains checked out and
-        // the caller can discard the transport without corrupting counters.
-        try self.idle.append(self.allocator, transport);
-        self.checked_out -= 1;
-        self.condition.signal(self.io);
-    }
-
-    /// Permanently discard a checked-out connection after a transport-level
-    /// failure. The caller deinitializes the transport before calling this.
-    pub fn noteDiscarded(self: *Pool) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        std.debug.assert(self.created > 0);
-        std.debug.assert(self.checked_out > 0);
-        self.created -= 1;
-        self.checked_out -= 1;
-        if (self.state == .closing and self.checked_out == 0) {
-            self.state = .closed;
-            self.condition.broadcast(self.io);
+    pub fn put(self: *Pool, handle: Handle) !void {
+        self.core.put(handle) catch |err| {
+            if (maintenance_pool == self) maintenance_pool = null;
+            if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+            return err;
+        };
+        if (suppress_next_checkin_pool == self) {
+            suppress_next_checkin_pool = null;
+        } else if (maintenance_pool == self) {
+            maintenance_pool = null;
         } else {
-            self.condition.signal(self.io);
+            self.emit(.{ .checked_in = .{ .generation = handle.generation } });
         }
+    }
+
+    pub fn noteDiscarded(self: *Pool) void {
+        const before = self.core.stats();
+        self.core.noteDiscarded();
+        const reason: ConnectionClosedReason = switch (before.state) {
+            .paused => .pool_cleared,
+            .closing, .closed => .pool_closed,
+            .ready => .connection_error,
+        };
+        self.emit(.{ .connection_closed = .{
+            .generation = before.generation,
+            .count = 1,
+            .reason = reason,
+        } });
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
     }
 
     pub fn stats(self: *Pool) Stats {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return .{
-            .state = self.state,
-            .max_size = self.max_size,
-            .total = self.created,
-            .idle = self.idle.items.len,
-            .checked_out = self.checked_out,
-            .waiters = self.waiters,
-        };
+        return self.core.stats();
     }
 
     pub fn idleCount(self: *Pool) usize {
-        return self.stats().idle;
+        return self.core.idleCount();
     }
 
     pub fn createdCount(self: *Pool) usize {
-        return self.stats().total;
+        return self.core.createdCount();
     }
 
     pub fn checkedOutCount(self: *Pool) usize {
-        return self.stats().checked_out;
+        return self.core.checkedOutCount();
+    }
+
+    pub fn checkoutFailed(self: *Pool, reason: CheckoutFailedReason) void {
+        if (checkout_pool != self) return;
+        const generation = self.core.generationSnapshot();
+        checkout_pool = null;
+        self.emit(.{ .checkout_failed = .{
+            .generation = generation,
+            .reason = reason,
+        } });
+    }
+
+    fn emitOpened(self: *Pool) void {
+        self.emit(.{ .pool_opened = .{
+            .generation = self.core.generationSnapshot(),
+        } });
+    }
+
+    fn emitIdleReclamation(self: *Pool, before: Stats, after: Stats) void {
+        if (before.total <= after.total) return;
+        self.emit(.{ .connection_closed = .{
+            .generation = before.generation,
+            .count = before.total - after.total,
+            .reason = .idle,
+        } });
+    }
+
+    fn clearThreadContext(self: *Pool) void {
+        if (checkout_pool == self) checkout_pool = null;
+        if (maintenance_pool == self) maintenance_pool = null;
+        if (suppress_next_checkin_pool == self) suppress_next_checkin_pool = null;
+    }
+
+    fn emit(self: *Pool, event: monitor_mod.Event) void {
+        const monitor = self.monitor orelse return;
+        monitor.emit(event);
     }
 };
 
-test "bounded pool accounts for checked-out lifecycle" {
-    var pool = try Pool.init(std.testing.io, std.testing.allocator, 2);
-    defer pool.deinit();
-
-    try pool.noteCreated();
-    try pool.noteCreated();
-    var snapshot = pool.stats();
-    try std.testing.expectEqual(State.ready, snapshot.state);
-    try std.testing.expectEqual(@as(usize, 2), snapshot.total);
-    try std.testing.expectEqual(@as(usize, 2), snapshot.checked_out);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
-    try std.testing.expect(!pool.canCreate());
-
-    pool.noteDiscarded();
-    snapshot = pool.stats();
-    try std.testing.expectEqual(@as(usize, 1), snapshot.total);
-    try std.testing.expectEqual(@as(usize, 1), snapshot.checked_out);
-    try std.testing.expect(pool.canCreate());
-
-    pool.noteDiscarded();
-}
-
-test "pool accounting remains consistent under contention" {
-    if (builtin.single_threaded) return error.SkipZigTest;
-
-    var pool = try Pool.init(std.testing.io, std.testing.allocator, 8);
-    defer pool.deinit();
-
-    const Runner = struct {
-        pool: *Pool,
-        iterations: usize,
-
-        fn run(self: *@This()) void {
-            for (0..self.iterations) |_| {
-                while (true) {
-                    self.pool.noteCreated() catch {
-                        std.Thread.yield() catch {};
-                        continue;
-                    };
-                    break;
-                }
-                self.pool.noteDiscarded();
-            }
-        }
-    };
-
-    var runner: Runner = .{ .pool = &pool, .iterations = 1000 };
-    var threads: [8]std.Thread = undefined;
-    for (&threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, Runner.run, .{&runner});
-    }
-    for (threads) |thread| thread.join();
-
-    const snapshot = pool.stats();
-    try std.testing.expectEqual(@as(usize, 0), snapshot.total);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.checked_out);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.idle);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.waiters);
-}
-
-test "pool close wakes waiters" {
-    if (builtin.single_threaded) return error.SkipZigTest;
-
-    var pool = try Pool.init(std.testing.io, std.testing.allocator, 1);
-    defer pool.deinit();
-    try pool.noteCreated();
-
-    const Waiter = struct {
-        pool: *Pool,
-        result: ?anyerror = null,
-
-        fn run(self: *@This()) void {
-            self.pool.waitForAvailability() catch |err| {
-                self.result = err;
-                return;
-            };
-        }
-    };
-
-    var waiter: Waiter = .{ .pool = &pool };
-    const thread = try std.Thread.spawn(.{}, Waiter.run, .{&waiter});
-    while (pool.stats().waiters == 0) {
-        std.Thread.yield() catch {};
-    }
-    pool.close();
-    thread.join();
-    try std.testing.expectEqual(error.PoolClosed, waiter.result.?);
-
-    // Simulate the checked-out transport being destroyed by RuntimeClient
-    // after close rejected its return to the idle pool.
-    pool.noteDiscarded();
-    try std.testing.expectEqual(State.closed, pool.stats().state);
-}
+threadlocal var checkout_pool: ?*Pool = null;
+threadlocal var maintenance_pool: ?*Pool = null;
+threadlocal var suppress_next_checkin_pool: ?*Pool = null;

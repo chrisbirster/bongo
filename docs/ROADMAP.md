@@ -2,119 +2,139 @@
 
 Bongo uses `BONGO-NNNN` GitHub issues for focused implementation milestones. The issue list is the detailed source of truth; this file is the current high-level map.
 
-For the dependency-ordered parity plan after v0.3.0, see [DRIVER_PARITY_PLAN.md](DRIVER_PARITY_PLAN.md).
+For the longer dependency-ordered parity plan, see [DRIVER_PARITY_PLAN.md](DRIVER_PARITY_PLAN.md).
 
-## Current position — v0.3.0
+## Current position — v0.5.0
 
-Bongo v0.3.0 is the first Deez-capable managed-runtime release. In addition to the earlier authenticated CRUD/query/admin API, the final release includes:
+Bongo v0.5.0 is the first production-oriented **replica-set runtime** milestone.
 
-- `mongodb://` parsing and typed connection options;
-- `mongodb+srv://` SRV/TXT discovery;
-- verified server-authenticated TLS;
-- SCRAM-SHA-256 and SCRAM-SHA-1 with authentication negotiation/speculative auth;
-- connect/socket/operation timeout handling;
-- experimental URI-driven `RuntimeClient`;
-- writable-server probing/selection;
-- a bounded reusable transport pool;
-- logical session/transaction-number primitives;
-- pinned replica-set transactions with start/commit/abort;
-- Deez-required transactional `insertOne` + `updateOne`;
-- unit, normal integration, TLS+SCRAM, replica-set transaction, and Linux/Fly-style validation gates.
+The earlier releases established the layers underneath it:
 
-The v0.3.0 tag is now a frozen baseline. New work must not be inferred from intermediate v0.3 development branches; only the final tagged tree defines what shipped.
+- v0.1: authenticated CRUD and cursors;
+- v0.2: concerns, query options, aggregation, administration, and raw commands;
+- v0.3: URI/SRV, verified TLS + SCRAM, bounded pooling, sessions, and transactions;
+- v0.4: runtime hardening, structured errors, standards-aware handshake metadata, synchronized state, explicit pool lifecycle/accounting, bounded checkout, and shutdown safety;
+- v0.5: CMAP completion plus replica-set SDAM, read selection, and failover.
 
-## Immediate next step — v0.3.x hardening
+The v0.5 runtime now includes:
 
-BONGO-0101 / #176 audits the exact path Deez depends on before Bongo adds more runtime features.
+- CMAP-style pool generations and clear semantics;
+- `minPoolSize`, `maxPoolSize`, `maxConnecting`, and `maxIdleTimeMS` behavior;
+- bounded wait-queue checkout through the operation timeout budget;
+- deterministic pool/connection monitoring events;
+- deterministic managed-client shutdown that stops heartbeat work and wakes/ends pool activity;
+- an owned SDAM topology model rather than borrowed one-shot hello data;
+- replica-set member discovery from `hosts`, `passives`, `arbiters`, `primary`, and `me`;
+- requested `replicaSet` name validation;
+- dedicated periodic hello monitoring and smoothed RTT tracking;
+- primary/write server selection with `serverSelectionTimeoutMS`;
+- read modes `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, and `nearest`;
+- tag-set and max-staleness filtering in the replica-set selector;
+- `localThresholdMS` latency-window filtering and deterministic selection among eligible servers;
+- per-server read pools and OP_MSG `$readPreference` propagation for non-primary reads;
+- primary-change pool clearing/reselection;
+- real three-member stepdown/election testing without recreating `RuntimeClient`;
+- concurrent shared-client selection stress coverage;
+- macOS, Linux/Fly, Zig 0.16 CI, live MongoDB CI, and exact Deez-consumer validation.
 
-```text
-Deez
-  -> RuntimeClient
-  -> URI / SRV
-  -> TLS / SCRAM
-  -> writable server
-  -> pool
-  -> session / transaction
-  -> find / insert / update
-```
+## What v0.5 intentionally does not mean
 
-Patch releases in the v0.3.x line are bug fixes, tests, documentation, and reliability improvements only.
+Bongo does **not** claim complete MongoDB-driver parity.
 
-## Production-runtime sequence
+The v0.5 supported deployment milestone is replica sets. These remain open:
 
-After the v0.3.x audit:
+- #64 sharded/mongos deployment support;
+- #65 load-balanced mode;
+- #66-#69 complete public/server sessions, cluster/operation time, and causal consistency;
+- #70 retryable reads;
+- #71 complete retryable writes;
+- #74 transaction option/deployment-aware pinning completion;
+- #75 transaction retry/error-label semantics;
+- #95 operation cancellation;
+- #44 built-in client-certificate mTLS / end-to-end MONGODB-X509;
+- #46 OP_COMPRESSED/compressor negotiation;
+- #77-#86 BSON ergonomics and typed decoding work.
 
-1. **Conformance and safety foundations**
-   - #96 official MongoDB specification-test harness
-   - #54 concurrency/thread-safety model
-   - #56 standards-aware handshake/capabilities
-   - #94 structured MongoDB errors/error labels
+The SDAM implementation uses dedicated periodic hello polling and proves the required replica-set behavior, but it does not yet claim every upstream SDAM monitoring detail.
 
-2. **CMAP-grade pooling**
-   - #49-#55 connection pool lifecycle, sizing, wait queue, monitoring, concurrency, shutdown
+## Immediate next sequence
 
-3. **SDAM and server selection**
-   - #57-#63 topology, replica-set discovery, heartbeats, primary/read selection, latency window, failover
-   - #64 sharded/mongos and #65 load-balanced mode follow as deployment extensions
+### 1. Turn the spec harness into real upstream-fixture conformance
 
-4. **Sessions and reliability**
-   - #66-#69 public/server sessions, cluster/operation time, causal consistency
-   - #70 retryable reads
-   - #71 retryable writes
-   - #74 transaction options/pinning
-   - #75 transaction retry/error-label semantics
-   - #95 cancellation
+#96 remains deliberately open.
 
-5. **BSON ergonomics**
-   - #77-#86 ObjectId generation, typed decoding, naming, collections, codecs, ownership, Extended JSON, Decimal128, UUID helpers
+The current harness distinguishes:
 
-6. **Optional parity features**
-   - #44 end-to-end MONGODB-X509 via `chrisbirster/zig-mtls`
-   - #46 OP_COMPRESSED/compressor negotiation
-   - #76 Stable API
-   - #87-#88 change streams
-   - #89-#91 GridFS
-   - #92-#93 command monitoring/logging
+- `supported` — Bongo-owned harness coverage for implemented areas;
+- `local_bridge` — CMAP/SDAM tests that exercise public Bongo behavior but are not upstream fixture ingestion;
+- `deferred` — unsupported areas.
 
-## Completed v0.3 milestones reconciled after release
+Next, pin and execute a documented subset of the official MongoDB driver specification fixtures in CI, starting with CMAP and SDAM/server selection and then extending to retries/errors/transactions.
 
-The following original roadmap tickets have been closed because their acceptance boundary shipped in v0.3.0:
+### 2. Finish the broad concurrency and capability contracts
 
-- #39 MongoDB URI parsing
-- #40 connection-string option validation
-- #41 SRV/TXT discovery
-- #43 SCRAM-SHA-1
-- #45 auth mechanism negotiation/speculative auth
-- #47 connect/socket timeouts
-- #48 current operation-timeout boundary
-- #72 transaction start
-- #73 transaction commit/abort
+- #54: document and stress the full public thread-safety/ownership model beyond the already-synchronized v0.5 RuntimeClient path.
+- #56: finish the remaining capability/spec surface needed by later deployment modes and compression.
+- #94: complete the richer error/write-error model needed by retries.
+- #98: expand from today's Linux CI + manual macOS gate into a pinned MongoDB-version/platform compatibility matrix.
 
-Some related broader behavior remains tracked by newer/narrowed open issues; closing the original milestone does not claim full MongoDB-driver parity.
+### 3. Reliability features
 
-## Explicit deferred boundaries
+After the v0.5 CMAP/SDAM foundation:
 
-- Full SDAM/background topology monitoring is not implemented yet.
-- Complete server-selection/read-preference behavior is not implemented yet.
-- Full retryable read/write semantics are not implemented yet.
-- Complete transaction retry/error-label semantics are not implemented yet.
-- Built-in client-certificate mTLS / end-to-end MONGODB-X509 is blocked on the transport boundary; generic work is being separated into `zig-mtls`.
-- OP_COMPRESSED is not enabled in v0.3.0; #46 is a future spec-backed reintroduction, not a hidden shipped feature.
-- Full SASLprep remains incomplete.
-- Typed BSON struct decoding remains future work.
+1. #66-#69 complete sessions/causal consistency;
+2. #70 retryable reads;
+3. #71 complete retryable writes;
+4. #74 transaction options/pinning;
+5. #75 transaction retry/error-label semantics;
+6. #95 cancellation.
 
-## Quality gates
+### 4. Deployment extensions
 
-Every production-runtime milestone must preserve:
+- #64 sharded/mongos;
+- #65 load-balanced mode.
+
+These should build on the existing topology/selection abstractions rather than creating a second runtime path.
+
+### 5. BSON/application ergonomics
+
+#77-#86 cover ObjectId generation, typed decoding, naming controls, optionals/enums, arrays/dynamic documents, custom codecs, ownership/zero-copy APIs, Extended JSON, Decimal128, and UUID helpers.
+
+### 6. Optional parity features
+
+- #44 MONGODB-X509 via a client-certificate-capable TLS transport;
+- #46 OP_COMPRESSED;
+- #76 Stable API;
+- #87-#88 change streams;
+- #89-#91 GridFS;
+- #92 command monitoring;
+- #93 structured logging.
+
+## Release and quality gates
+
+The normal complete local gate is:
 
 ```bash
-zig build test
-zig build integration-test
-zig build tls-integration-test
-zig build runtime-integration-test
+make test
 ```
 
-and the Linux/Fly validation harness. The roadmap additionally moves official MongoDB specification tests, macOS CI, compatibility matrices, concurrency stress tests, failover tests, and fuzz/malformed-wire tests earlier as the relevant features land.
+It runs unit tests, the specification harness, standalone integration, TLS+SCRAM, transactions, CMAP, three-member SDAM/failover, and Deez-facing readiness.
+
+Linux/Fly-style validation remains required:
+
+```bash
+docker compose build --no-cache
+docker compose up --abort-on-container-exit --exit-code-from bongo-linux-validation
+```
+
+A release candidate must also keep Deez green against the exact Bongo checkout:
+
+```bash
+zig build test --fork=../bongo
+zig build mongo-integration-test --fork=../bongo
+```
+
+Future milestones should expand conformance and compatibility without weakening these gates.
 
 ## Engineering rule
 
