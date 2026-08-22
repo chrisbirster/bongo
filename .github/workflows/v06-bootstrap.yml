@@ -32,3 +32,5 @@ jobs:
           fi
           git commit -m "Implement v0.6 retry reliability core"
           git push origin HEAD:bongo-0.6.0-rapid
+
+# Triggered after the workflow exists so GitHub evaluates this push.
