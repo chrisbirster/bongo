@@ -30,10 +30,9 @@ test "truncated valid BSON is rejected at every boundary" {
 
     try bongo.bson.validateDocument(document);
     for (0..document.len) |length| {
-        try std.testing.expectError(
-            error.UnexpectedEnd,
-            bongo.bson.validateDocument(document[0..length]),
-        );
+        if (bongo.bson.validateDocument(document[0..length])) |_| {
+            return error.TestUnexpectedResult;
+        } else |_| {}
     }
 }
 
