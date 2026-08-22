@@ -203,7 +203,7 @@ fn runAdminCommand(
 ) !void {
     var connection = try bongo.mongo.Connection.connect(io, "localhost", port);
     defer connection.deinit();
-    const request_id: i32 = @intCast(67000 + port - 27021);
+    const request_id: i32 = 67000 + @as(i32, port) - 27021;
     const request = try bongo.mongo.op_msg.encodeCommand(
         allocator,
         command,
