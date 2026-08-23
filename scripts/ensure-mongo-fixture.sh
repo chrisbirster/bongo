@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-MONGO_IMAGE="${MONGO_IMAGE:-mongo:latest}"
+MONGO_IMAGE="${MONGO_IMAGE:-mongo:8.0}"
 FIXTURE_VERSION="3"
 
 die() {
