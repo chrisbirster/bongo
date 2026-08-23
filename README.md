@@ -6,7 +6,7 @@ Named after my cat, Bongo.
 
 ![Bongo](./assets/bongo.jpg)
 
-> **Status:** experimental. Bongo has a stable low-level/single-server API and a production-oriented replica-set `RuntimeClient` for Zig 0.16. The managed runtime now covers verified TLS + SCRAM, URI/SRV configuration, CMAP-style pooling, SDAM discovery/monitoring, primary and read-preference selection, sessions, and transactions. It is still not a production-complete MongoDB driver across every deployment type and specification feature.
+> **Status:** experimental. Bongo has a stable low-level/single-server API and a production-oriented replica-set `RuntimeClient` for Zig 0.16. The managed runtime covers verified TLS + SCRAM, URI/SRV configuration, CMAP-style pooling, SDAM discovery/monitoring, primary and read-preference selection, sessions, transactions, retryable reads, and retryable single-document writes. It is still not a production-complete MongoDB driver across every deployment type and specification feature.
 
 ## Quick start
 
@@ -103,14 +103,15 @@ defer cursor.deinit();
 | Server selection | primary/write selection, read-preference selection, `serverSelectionTimeoutMS`, `localThresholdMS` latency window |
 | Pooling | bounded CMAP-style reusable pools with min/max sizing, `maxConnecting`, idle lifetime, checkout deadlines, generations/clear semantics, monitoring events |
 | Sessions | logical session IDs and transaction numbers |
-| Transactions | pinned connection, `startTransaction`, commit, abort; live-tested on a replica set |
+| Transactions | pinned connection, `startTransaction`, commit, abort, and one retry of `UnknownTransactionCommitResult`; live-tested on a replica set |
+| Retryability | one retry for the initial `find` command and retryable `insertOne`, `updateOne`, `deleteOne`, and `findOneAndUpdate` on replica sets; write retries reuse the same `(lsid, txnNumber)` |
 | Shutdown | deterministic monitor stop/join, new-work rejection, pool close, active-handle checks |
 | Timeouts | connect, socket, whole-operation, bounded pool checkout, and server-selection budgets |
-| Testing | unit, spec harness, standalone integration, TLS+SCRAM, transactions, CMAP, three-member SDAM/failover, Deez readiness, Linux/Fly validation |
+| Testing | unit, pinned spec fixtures, standalone integration, TLS+SCRAM, transactions, CMAP, three-member SDAM/failover, retry failpoints, malformed-wire stress, Deez readiness, Linux/Fly validation, MongoDB 7.0/8.0 CI, macOS CI |
 
-## Replica-set behavior in v0.5
+## Replica-set and retry behavior in v0.6
 
-The v0.5 runtime is designed so applications do not recreate the client when a primary changes.
+The v0.6 runtime is designed so applications do not recreate the client when a primary changes and so eligible operations can recover once from retryable server or transport failures.
 
 1. `RuntimeClient` connects from configured or discovered seeds.
 2. SDAM owns copied server descriptions instead of borrowing a one-shot hello buffer.
@@ -119,19 +120,21 @@ The v0.5 runtime is designed so applications do not recreate the client when a p
 5. Reads can select a primary or secondary according to the requested mode and latency window.
 6. Non-primary OP_MSG reads carry `$readPreference` metadata on the wire.
 7. When the primary changes, the affected application pool generation is cleared and the runtime selects the replacement primary.
-8. New operations continue through the same `RuntimeClient`.
+8. An eligible initial `find` is retried once after a retryable read failure. `getMore` is deliberately not retried.
+9. Eligible single-document writes are retried once on replica sets while preserving the same logical write identity `(lsid, txnNumber)`.
+10. New operations continue through the same `RuntimeClient`.
 
-The repository includes a real three-member replica-set integration test that steps down the primary, waits for MongoDB to elect another member, and verifies that Bongo resumes writes without recreating the client.
+The repository includes real three-member replica-set integration tests for primary stepdown/election, secondary reads, retryable read/write failpoints, transaction commit retry, and shutdown with a live secondary cursor.
 
 ## Important limitations
 
 Bongo deliberately exposes unfinished boundaries instead of pretending to be a complete production driver.
 
-- The original `Client` remains the simpler single-server API. Managed pooling, SDAM, sessions, and replica-set failover live in `RuntimeClient`.
-- v0.5 is the replica-set runtime milestone. Full sharded/mongos deployment support (#64) and load-balanced mode (#65) are not complete.
-- Retryable reads (#70) and complete retryable writes (#71) are not implemented yet.
-- Complete public session/causal-consistency behavior (#66-#69) and full transaction retry/pinning semantics (#74-#75) remain incomplete.
-- The specification harness reports supported/local-bridge/deferred areas honestly, but full upstream MongoDB fixture ingestion is still open under #96.
+- The original `Client` remains the simpler single-server API. Managed pooling, SDAM, sessions, retryability, and replica-set failover live in `RuntimeClient`.
+- v0.6 remains a replica-set runtime milestone. Full sharded/mongos deployment support (#64) and load-balanced mode (#65) are not complete.
+- Retryable writes in v0.6 are replica-set scoped and currently cover `insertOne`, `updateOne`, `deleteOne`, and `findOneAndUpdate`. `getMore` is intentionally non-retryable.
+- Complete public session/causal-consistency behavior (#66-#69) and the remaining transaction convenience/body-retry semantics (#74-#75) remain incomplete.
+- The specification harness now executes a pinned subset of official MongoDB retryable-read/write fixtures, but it does not claim full upstream fixture-corpus conformance; #96 remains incremental work.
 - SDAM currently uses periodic hello polling; it does not yet claim the complete upstream SDAM monitoring specification surface.
 - Zig 0.16's standard TLS client cannot present a client certificate. Server-authenticated TLS + SCRAM is supported; built-in mutual TLS / end-to-end `MONGODB-X509` is not. See [Zig 0.16 TLS gap](docs/zig-0.16-tls-gap.md).
 - Wire compression is not enabled yet (#46).
@@ -175,6 +178,8 @@ TLS + SCRAM
 runtime / transactions
 CMAP
 three-member SDAM / failover
+retryable reads / writes / commit handling
+malformed-wire stress
 Deez-facing readiness
 ```
 

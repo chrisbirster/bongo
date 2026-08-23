@@ -48,6 +48,8 @@ jobs:
         run: bash ./scripts/ensure-mongo-fixture.sh sdam
       - name: Test discovery, selection, stress and failover
         run: zig build sdam-integration-test
+      - name: Test retryable reads, writes, and commit handling
+        run: zig build retryability-integration-test
       - name: Stop SDAM fixture
         if: always()
         run: docker rm -f mongodb-sdam >/dev/null 2>&1 || true

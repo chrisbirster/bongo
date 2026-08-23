@@ -13,5 +13,7 @@ jobs:
         with:
           version: 0.16.0
       - run: zig build test
+      - run: zig build spec-test
+      - run: zig build fuzz-test
       - name: Compile Deez readiness surface
         run: zig build deez-readiness-test
