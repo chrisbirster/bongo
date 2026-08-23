@@ -1,6 +1,33 @@
 # Connection strings
 
-Bongo's connection-string layer is built in stages so parsing, normalization, DNS discovery, and transport behavior stay independently testable.
+Bongo keeps connection-string work in layers so URI parsing, option validation, DNS discovery, and transport setup can be tested independently.
+
+## From URI to a live client
+
+```mermaid
+flowchart TD
+    URI[MongoDB connection string]
+    URI --> Parse[parseConnectionString]
+    Parse --> Structural[Owned ConnectionString]
+    Structural --> Normalize[parseConnectionOptions]
+    Normalize --> Options[NormalizedConnectionOptions]
+
+    Options --> Scheme{mongodb or mongodb+srv?}
+    Scheme -->|mongodb| Seeds[Configured seed hosts]
+    Scheme -->|mongodb+srv| DNS[SRV + TXT lookup]
+    DNS --> Seeds
+
+    Seeds --> Connect[Open transport]
+    Connect --> TLS{TLS enabled?}
+    TLS -->|Yes| Secure[TLS with server verification]
+    TLS -->|No| Plain[TCP]
+    Secure --> Auth[Handshake + authentication]
+    Plain --> Auth
+    Auth --> Runtime[RuntimeClient]
+    Runtime --> Topology[SDAM discovery + pools]
+```
+
+The parser does not open sockets. DNS discovery does not authenticate. Authentication does not own server selection. Keeping those responsibilities separate makes failures easier to test and reason about.
 
 ## Structural parsing
 
@@ -18,20 +45,22 @@ const first_host = parsed.hosts[0].name;  // "db1.example"
 const database = parsed.database.?;       // "app"
 ```
 
-The parsed value owns the backing URI storage plus its host and option arrays. All string fields remain valid until `deinit()`.
+The parsed value owns the backing URI storage plus its host and option arrays. String fields remain valid until `deinit()`.
 
 The structural parser understands:
 
-- optional username and password user-info;
+- optional username/password user-info;
 - one or more comma-separated seed hosts;
 - optional per-host ports;
 - bracketed IPv6 literals such as `[2001:db8::1]:27017`;
 - an optional default database;
 - query-string option name/value pairs.
 
-## Normalized connection options
+Structural parsing preserves encoded text and raw option values. `%40` is still `%40` here, and `retryWrites=true` is still a name/value pair.
 
-`bongo.parseConnectionOptions(allocator, uri)` builds on the structural parser and returns an owned `bongo.NormalizedConnectionOptions` value suitable for later connection-layer stages.
+## Normalized options
+
+`bongo.parseConnectionOptions(allocator, uri)` turns the structural result into typed `bongo.NormalizedConnectionOptions`.
 
 ```zig
 var options = try bongo.parseConnectionOptions(
@@ -40,31 +69,44 @@ var options = try bongo.parseConnectionOptions(
 );
 defer options.deinit();
 
-const host = options.hosts[0].name;              // "db.example"
-const port = options.hosts[0].port;              // 27017
-const tls = options.tls.?;                       // true
+const host = options.hosts[0].name;                   // "db.example"
+const port = options.hosts[0].port;                   // 27017
+const tls = options.tls.?;                            // true
 const connect_timeout = options.connect_timeout_ms.?; // 5000
 ```
 
-Normalization currently provides the typed settings needed by the rest of the v0.3 connection work:
+Normalization handles the settings used by the managed runtime, including:
 
-- percent-decoded UTF-8 credentials, database names, file paths, and string options;
-- lowercase host names with a default port of `27017`;
-- authentication mechanism and authentication-source validation;
-- boolean topology/TLS options;
-- connection, socket, and client-side operation timeout values;
-- compressor lists for forward-compatible configuration parsing;
-- TLS certificate/CA settings for forward-compatible configuration parsing;
-- SRV-specific option fields for the DNS discovery layer.
+- percent-decoded credentials, database names, paths, and string options;
+- lowercase host names and default port `27017`;
+- authentication mechanism and auth-source validation;
+- TLS and topology options;
+- connect, socket, operation, pool, heartbeat, and server-selection settings;
+- read preference and max-staleness settings;
+- `retryReads` and `retryWrites`;
+- SRV-specific settings;
+- compressor preferences for forward-compatible parsing.
 
-Recognized scalar options are intentionally strict: conflicting or repeated settings return deterministic errors instead of leaving precedence undefined. `tls` and its legacy alias `ssl` are the exception required by the MongoDB URI rules: repeated instances are accepted when all values agree and rejected when they conflict.
+Recognized scalar options are strict. Conflicting repeated values return errors instead of relying on undocumented precedence. `tls` and legacy `ssl` follow the MongoDB URI rules: repeated values may agree, but conflicting values are rejected.
 
-Bongo also rejects known incompatible combinations such as `directConnection=true` with multiple seed hosts, load-balanced mode with multiple seeds or a replica set, conflicting insecure TLS controls, invalid authentication requirements, and SRV-only options on a standard `mongodb://` URI.
+Bongo also rejects incompatible combinations such as `directConnection=true` with multiple seeds, load-balanced mode with a replica-set name, conflicting TLS security controls, and SRV-only options on a normal `mongodb://` URI.
 
-Unknown URI options are ignored for forward compatibility. Bongo does not yet have a logging subsystem to emit the MongoDB specification's recommended warning for unsupported keys.
+Unknown URI options are ignored for forward compatibility.
 
-## Layer boundaries
+## `mongodb+srv://`
 
-Structural parsing deliberately preserves percent-encoded text and raw option values. For example, `%40` remains `%40` instead of becoming `@`, and `retryWrites=true` remains a raw option pair rather than immediately becoming a boolean. Normalization is the layer that decodes and validates those values.
+SRV connection strings go through DNS before the runtime opens application connections. Bongo resolves SRV hosts, validates that discovered names remain under the expected parent domain, applies supported TXT defaults, and then feeds the resulting host list into the same normalized runtime configuration used by normal seed lists.
 
-`mongodb+srv://` discovery, authentication negotiation, and timeout enforcement remain separate connection-layer stages so each can be tested independently. Runtime TLS and wire compression are deferred beyond v0.3; their URI preferences are parsed now so later transport support does not require changing the connection-string API.
+That means the rest of the runtime does not need a second networking architecture just because the seed list came from DNS.
+
+## TLS and authentication
+
+When TLS is enabled, Bongo verifies the server certificate and host name before using the connection for MongoDB authentication. SCRAM-SHA-256 and SCRAM-SHA-1 are supported, including mechanism negotiation and speculative authentication.
+
+Client-certificate mTLS / end-to-end `MONGODB-X509` is still limited by the Zig 0.16 TLS client API; see [Zig 0.16 TLS gap](zig-0.16-tls-gap.md).
+
+## Current limits
+
+Some options are parsed before the corresponding runtime feature exists. In particular, compressor preferences are understood by the URI layer, but Bongo does not yet send `OP_COMPRESSED` messages.
+
+Sharded/mongos and load-balanced deployment support are also not yet complete. The URI layer validates their configuration boundaries without pretending that the full runtime behavior is already implemented.
