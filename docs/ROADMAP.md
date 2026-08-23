@@ -4,97 +4,80 @@ Bongo uses `BONGO-NNNN` GitHub issues for focused implementation milestones. The
 
 For the longer dependency-ordered parity plan, see [DRIVER_PARITY_PLAN.md](DRIVER_PARITY_PLAN.md).
 
-## Current position — v0.5.0
+## Current position — v0.6.0
 
-Bongo v0.5.0 is the first production-oriented **replica-set runtime** milestone.
+Bongo v0.6.0 is the **replica-set reliability and conformance** milestone.
 
-The earlier releases established the layers underneath it:
+The release sequence now looks like this:
 
 - v0.1: authenticated CRUD and cursors;
 - v0.2: concerns, query options, aggregation, administration, and raw commands;
 - v0.3: URI/SRV, verified TLS + SCRAM, bounded pooling, sessions, and transactions;
-- v0.4: runtime hardening, structured errors, standards-aware handshake metadata, synchronized state, explicit pool lifecycle/accounting, bounded checkout, and shutdown safety;
-- v0.5: CMAP completion plus replica-set SDAM, read selection, and failover.
+- v0.4: runtime hardening, structured errors, synchronized state, bounded checkout, and shutdown safety;
+- v0.5: CMAP completion plus replica-set SDAM, read selection, and failover;
+- v0.6: retryable reads/writes, transaction commit retry, upstream retry fixtures, malformed-wire stress, shutdown ownership stress, and a MongoDB/platform compatibility matrix.
 
-The v0.5 runtime now includes:
+The v0.6 runtime includes:
 
-- CMAP-style pool generations and clear semantics;
-- `minPoolSize`, `maxPoolSize`, `maxConnecting`, and `maxIdleTimeMS` behavior;
-- bounded wait-queue checkout through the operation timeout budget;
-- deterministic pool/connection monitoring events;
-- deterministic managed-client shutdown that stops heartbeat work and wakes/ends pool activity;
-- an owned SDAM topology model rather than borrowed one-shot hello data;
-- replica-set member discovery from `hosts`, `passives`, `arbiters`, `primary`, and `me`;
-- requested `replicaSet` name validation;
-- dedicated periodic hello monitoring and smoothed RTT tracking;
-- primary/write server selection with `serverSelectionTimeoutMS`;
-- read modes `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, and `nearest`;
-- tag-set and max-staleness filtering in the replica-set selector;
-- `localThresholdMS` latency-window filtering and deterministic selection among eligible servers;
-- per-server read pools and OP_MSG `$readPreference` propagation for non-primary reads;
-- primary-change pool clearing/reselection;
-- real three-member stepdown/election testing without recreating `RuntimeClient`;
-- concurrent shared-client selection stress coverage;
+- all v0.5 replica-set CMAP/SDAM behavior;
+- `retryReads` and `retryWrites` URI/runtime configuration;
+- one retry of the initial `find` command on retryable read failures;
+- one retry for replica-set `insertOne`, `updateOne`, `deleteOne`, and `findOneAndUpdate`;
+- stable `(lsid, txnNumber)` reuse across a retryable write attempt;
+- one retry of `commitTransaction` for `UnknownTransactionCommitResult`, with majority write concern on the retry;
+- richer retry/read/write/write-concern error classification;
+- pinned official MongoDB retryable-read and retryable-write fixtures in the spec harness;
+- live `failCommand` integration coverage for retryable reads, writes, and transaction commit handling;
+- deterministic malformed BSON/OP_MSG mutation coverage;
+- secondary-cursor shutdown/ownership stress;
+- automated macOS Zig 0.16 coverage and full Linux `make test` compatibility rows for MongoDB 7.0 and 8.0;
 - macOS, Linux/Fly, Zig 0.16 CI, live MongoDB CI, and exact Deez-consumer validation.
 
-## What v0.5 intentionally does not mean
+## What v0.6 intentionally does not mean
 
 Bongo does **not** claim complete MongoDB-driver parity.
 
-The v0.5 supported deployment milestone is replica sets. These remain open:
+The supported managed deployment milestone remains replica sets. These remain open or incremental:
 
 - #64 sharded/mongos deployment support;
 - #65 load-balanced mode;
 - #66-#69 complete public/server sessions, cluster/operation time, and causal consistency;
-- #70 retryable reads;
-- #71 complete retryable writes;
-- #74 transaction option/deployment-aware pinning completion;
-- #75 transaction retry/error-label semantics;
+- #74 remaining transaction option/deployment-aware pinning behavior;
+- #75 remaining transaction convenience/body-retry semantics beyond commit retry;
 - #95 operation cancellation;
 - #44 built-in client-certificate mTLS / end-to-end MONGODB-X509;
 - #46 OP_COMPRESSED/compressor negotiation;
 - #77-#86 BSON ergonomics and typed decoding work.
 
-The SDAM implementation uses dedicated periodic hello polling and proves the required replica-set behavior, but it does not yet claim every upstream SDAM monitoring detail.
+Retryability in v0.6 is deliberately bounded: `getMore` is not retried, retryable writes are replica-set scoped, and the release does not claim sharded/load-balanced retry semantics.
+
+The specification harness now consumes a pinned upstream subset for retryable reads/writes, but #96 remains incremental until broader official fixture ingestion exists. SDAM still uses dedicated periodic hello polling and does not claim every upstream monitoring detail.
 
 ## Immediate next sequence
 
-### 1. Turn the spec harness into real upstream-fixture conformance
+### 1. Complete sessions and transaction ergonomics
 
-#96 remains deliberately open.
+- #66-#69: public/server sessions, cluster/operation time, and causal consistency.
+- #74: remaining transaction option and deployment-aware pinning behavior.
+- #75: transaction body retry/convenience semantics beyond the v0.6 commit retry path.
 
-The current harness distinguishes:
+### 2. Continue official specification ingestion
 
-- `supported` — Bongo-owned harness coverage for implemented areas;
-- `local_bridge` — CMAP/SDAM tests that exercise public Bongo behavior but are not upstream fixture ingestion;
-- `deferred` — unsupported areas.
+#96 remains deliberately incremental. Extend the pinned fixture harness beyond retryable reads/writes into CMAP, SDAM/server selection, sessions, and transactions without claiming conformance that is not actually executed.
 
-Next, pin and execute a documented subset of the official MongoDB driver specification fixtures in CI, starting with CMAP and SDAM/server selection and then extending to retries/errors/transactions.
+### 3. Finish broad concurrency/capability contracts
 
-### 2. Finish the broad concurrency and capability contracts
-
-- #54: document and stress the full public thread-safety/ownership model beyond the already-synchronized v0.5 RuntimeClient path.
-- #56: finish the remaining capability/spec surface needed by later deployment modes and compression.
-- #94: complete the richer error/write-error model needed by retries.
-- #98: expand from today's Linux CI + manual macOS gate into a pinned MongoDB-version/platform compatibility matrix.
-
-### 3. Reliability features
-
-After the v0.5 CMAP/SDAM foundation:
-
-1. #66-#69 complete sessions/causal consistency;
-2. #70 retryable reads;
-3. #71 complete retryable writes;
-4. #74 transaction options/pinning;
-5. #75 transaction retry/error-label semantics;
-6. #95 cancellation.
+- #54: continue stress coverage of the public thread-safety and ownership model beyond the v0.6 shutdown/read-handle cases.
+- #56: finish remaining handshake/capability surface needed by later deployment modes and compression.
+- #94: continue structured error detail where future operations require it.
+- #98: keep the MongoDB/platform compatibility matrix current as supported server versions change.
 
 ### 4. Deployment extensions
 
 - #64 sharded/mongos;
 - #65 load-balanced mode.
 
-These should build on the existing topology/selection abstractions rather than creating a second runtime path.
+These should build on the existing topology, selection, pool, retry, and error abstractions rather than creating a second runtime path.
 
 ### 5. BSON/application ergonomics
 
@@ -118,7 +101,7 @@ The normal complete local gate is:
 make test
 ```
 
-It runs unit tests, the specification harness, standalone integration, TLS+SCRAM, transactions, CMAP, three-member SDAM/failover, and Deez-facing readiness.
+It runs unit tests, the specification harness, standalone integration, TLS+SCRAM, transactions, CMAP, three-member SDAM/failover, retryability failpoint tests, malformed-wire stress, and Deez-facing readiness.
 
 Linux/Fly-style validation remains required:
 
@@ -134,7 +117,7 @@ zig build test --fork=../bongo
 zig build mongo-integration-test --fork=../bongo
 ```
 
-Future milestones should expand conformance and compatibility without weakening these gates.
+CI additionally validates the supported MongoDB 7.0/8.0 rows and macOS Zig 0.16 compile/spec/fuzz surface.
 
 ## Engineering rule
 
