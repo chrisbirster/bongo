@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-MONGO_IMAGE ?= mongo:latest
+MONGO_IMAGE ?= mongo:8.0
 export MONGO_IMAGE
 
 .PHONY: \
