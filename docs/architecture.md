@@ -1,192 +1,150 @@
 # Architecture
 
-Bongo is intentionally layered so the application-facing driver API does not need to know MongoDB wire details.
+Bongo has two application-facing paths that share the same BSON and MongoDB wire-protocol code:
 
-```text
-Application
-    │
-    ▼
-Client / Database / Collection
-    │
-    ├── CRUD and command modules
-    │       │
-    │       └── cursor / response parsing
-    │
-    ▼
-OP_MSG
-    │
-    ▼
-BSON
-    │
-    ▼
-TCP connection
-    │
-    ▼
-MongoDB
+- `Client` is the simpler single-server API.
+- `RuntimeClient` adds URI/SRV configuration, TLS and authentication, connection pools, replica-set discovery, server selection, retries, sessions, and transactions.
+
+Most applications that need a normal MongoDB deployment should start with `RuntimeClient`. The lower-level pieces remain public because they are useful for testing, learning the protocol, and building focused tooling.
+
+## Big picture
+
+```mermaid
+flowchart TD
+    App[Application]
+
+    App --> Client[Client / Database / Collection]
+    App --> Runtime[RuntimeClient]
+
+    Client --> Commands[CRUD / query / admin / command modules]
+    Runtime --> Selection[SDAM + server selection]
+    Selection --> Pools[Per-server connection pools]
+    Pools --> Commands
+
+    Commands --> Cursor[Cursor / response parsing]
+    Commands --> OPMSG[OP_MSG]
+    Cursor --> OPMSG
+    OPMSG --> BSON[BSON]
+    BSON --> Transport[TCP or TLS transport]
+    Transport --> Mongo[(MongoDB)]
 ```
 
-Authentication is performed when the client establishes its current connection:
+The important boundary is that application code does not need to know how an OP_MSG frame is laid out or how a replica-set member was selected. Those details stay below the public client APIs.
 
-```text
-connect
-   │
-   ▼
-TCP connection
-   │
-   ▼
-SCRAM-SHA-256
-   │
-   ▼
-authenticated Client
+## `Client`
+
+`Client` is the direct single-server path. It owns one authenticated connection and exposes `Database` and `Collection` handles for CRUD, queries, commands, indexes, and administration.
+
+A `Database` or `Collection` is a lightweight borrowed handle. Creating one does not open another socket or allocate another client.
+
+Use `Client` when a single known MongoDB server is exactly what you want. Use `RuntimeClient` when the deployment needs URI/SRV handling, pooling, replica-set behavior, or transactions.
+
+## `RuntimeClient`
+
+`RuntimeClient` is the managed path used by applications such as Deez. It owns or coordinates:
+
+- normalized connection options;
+- the primary application pool;
+- per-server read pools;
+- an SDAM topology manager and heartbeat work;
+- server selection for reads and writes;
+- retryable read/write behavior supported by the current deployment;
+- session and transaction state;
+- deterministic shutdown and active-handle checks.
+
+A replica-set operation roughly follows this path:
+
+```mermaid
+flowchart TD
+    Start[Application operation] --> Kind{Read or write?}
+
+    Kind -->|Write| Primary[Select current primary]
+    Kind -->|Read| Pref[Apply read preference]
+    Pref --> Eligible[Choose eligible server]
+
+    Primary --> Pool[Checkout connection from selected server pool]
+    Eligible --> Pool
+
+    Pool --> Command[Encode BSON command into OP_MSG]
+    Command --> Send[Send request]
+    Send --> Result{Success?}
+
+    Result -->|Yes| Return[Parse result and check connection back in]
+    Result -->|Retryable failure| Clear[Discard/clear affected connection or pool]
+    Clear --> Refresh[Refresh topology / reselect]
+    Refresh --> Pool
+    Result -->|Terminal failure| Error[Return error]
 ```
 
-## Public handles
-
-### `Client`
-
-`Client` currently owns:
-
-- the allocator used for driver-owned allocations;
-- one authenticated MongoDB connection;
-- the next application command request ID;
-- configured read concern;
-- configured write concern.
-
-A future connection-pool milestone will change the one-connection architecture, but callers should continue to interact with the `Client` abstraction rather than with raw sockets.
-
-### `Database`
-
-A `Database` is a lightweight borrowed handle containing:
-
-- `*Client`
-- a database name slice
-
-It does not allocate or open another connection.
-
-### `Collection`
-
-A `Collection` is a lightweight borrowed handle containing:
-
-- `*Client`
-- a database name slice
-- a collection name slice
-
-Most application operations are exposed through this handle.
+The retry loop is deliberately bounded. v0.6 retries the initial `find` command and supported single-document replica-set writes once. Cursor `getMore` is not retried.
 
 ## Command modules
 
-Bongo keeps protocol-specific responsibilities in focused modules rather than building every command directly inside `Client`.
+Protocol-specific behavior lives in focused modules rather than one giant client file. Examples include:
 
-Examples include:
-
-- `crud.zig` — insert/update/delete wire commands and write-result parsing;
-- `replacement.zig` — replacement-document validation;
-- `find_and_modify.zig` — atomic find-and-modify commands;
+- `crud.zig` — insert/update/delete commands and write-result parsing;
 - `find_options.zig` — configurable find commands;
-- `aggregate.zig` — aggregation command encoding;
-- `explain.zig` — explain wrapper commands;
-- `collection_admin.zig` — collection management;
-- `index_admin.zig` — index management;
-- `command_response.zig` — shared command-response validation;
-- `command_cursor.zig` — reusable cursor parsing, `getMore`, and cleanup.
+- `find_and_modify.zig` — atomic find-and-modify operations;
+- `aggregate.zig` and `explain.zig` — aggregation and explain commands;
+- `collection_admin.zig`, `index_admin.zig`, and `database_admin.zig` — administration;
+- `command_response.zig` — common command-response validation;
+- `command_cursor.zig` — cursor parsing, `getMore`, and cleanup;
+- `runtime_client.zig` — managed routing, retry, shutdown, and public runtime facade;
+- `sdam.zig` / `sdam_monitor.zig` — topology state and monitoring;
+- `pool.zig` — reusable connection-pool behavior.
 
-The goal is for `Client` and `Collection` to coordinate operations while wire-specific parsing stays close to the code that understands that wire shape.
+This keeps wire-shape knowledge close to the code that validates that shape.
 
-## OP_MSG
+## OP_MSG and BSON
 
-MongoDB commands are encoded into OP_MSG messages. Each application command receives a positive request ID. Replies are checked against the expected `responseTo` value before their contents are trusted.
+MongoDB commands are BSON documents carried inside OP_MSG messages. Each application command gets a positive request ID. Replies are checked against the expected `responseTo` value before their contents are trusted.
 
-A response from MongoDB is external input. Incorrect IDs, missing fields, wrong BSON types, malformed batches, and failed command status must return errors rather than assertions.
+MongoDB replies are external input. A malformed BSON document, wrong response ID, missing field, wrong BSON type, malformed batch, or failed command status is an error—not an assertion.
 
-## BSON
+Bongo exposes raw BSON documents and values today. A broader typed Zig decoding layer remains future work.
 
-BSON is the serialization layer below commands. Bongo supports raw BSON documents and values so the driver can implement MongoDB protocol behavior before a full typed Zig decoding layer exists.
+## Document ownership
 
-That leads to two important public ownership forms.
-
-### Borrowed documents
-
-Cursor iteration returns a raw BSON slice borrowed from the cursor's current response buffer:
+Cursor iteration returns a BSON slice borrowed from the cursor's current response buffer:
 
 ```zig
 const document = (try cursor.next()).?;
 ```
 
-The slice is valid only until the cursor advances, closes, or deinitializes.
+That slice is valid only until the cursor advances, closes, or deinitializes.
 
-### Owned documents
-
-Operations such as `findOne()` and `explainFind()` return an owned BSON document. The caller must deinitialize it:
+Operations such as `findOne()` can return an owned document instead:
 
 ```zig
 var document = (try collection.findOne(filter)).?;
 defer document.deinit();
 ```
 
-The owned bytes remain valid until `deinit()`.
+Owned bytes remain valid until `deinit()`.
 
 ## Cursors
 
-Cursor-returning commands keep only the current response batch in memory.
+A cursor keeps only the current MongoDB batch in memory. When a batch is exhausted and the server cursor ID is still nonzero, Bongo sends `getMore`. If the caller stops early, Bongo can send `killCursors` during cleanup.
 
-```text
-firstBatch
-    │
-    ▼
-next()
-    │
-    ├── more documents in current batch ──► return document
-    │
-    └── batch exhausted and cursor id != 0
-                    │
-                    ▼
-                  getMore
-                    │
-                    ▼
-                 nextBatch
-```
-
-The previous response buffer is freed when Bongo advances to a new batch. If iteration stops while MongoDB still owns a server cursor, cleanup sends `killCursors`.
-
-See [cursors.md](cursors.md).
+See [cursors.md](cursors.md) for the full lifecycle.
 
 ## Error boundary
 
-Bongo Style draws a hard line between runtime input and programmer invariants:
+The rule is simple:
 
-```text
-Can MongoDB, the network, or a caller cause it?
-                 │
-          ┌──────┴──────┐
-         yes            no
-          │              │
-        error         assertion
+```mermaid
+flowchart LR
+    Q{Can MongoDB, the network, or caller input cause it?}
+    Q -->|Yes| E[Return an error]
+    Q -->|No| A[Internal invariant / assertion]
 ```
 
-Examples that must be errors:
-
-- malformed BSON;
-- malformed OP_MSG replies;
-- mismatched response IDs;
-- missing or incorrectly typed response fields;
-- authentication rejection;
-- MongoDB command/write failures;
-- invalid caller input.
-
-Assertions are for state that should be impossible after Bongo has already validated its inputs, such as an internal delete limit that must be exactly `0` or `1`, or fetching a new cursor batch only after establishing that the cursor is open and its ID is nonzero.
+Errors cover malformed replies, command failures, authentication rejection, invalid caller input, timeouts, selection failures, and transport failures. Assertions are reserved for states that should be impossible after Bongo has already validated its inputs.
 
 ## Current deployment boundary
 
-The current architecture is intentionally a single-server driver. Several production-driver responsibilities remain later milestones:
+As of v0.6, `RuntimeClient` is production-oriented around standalone servers and replica sets. It includes verified server-authenticated TLS, SCRAM, CMAP-style pooling, replica-set SDAM, read preferences, failover, bounded retry behavior, sessions, and transactions.
 
-- client option/URI parsing;
-- TLS;
-- socket/connect timeouts;
-- connection pooling;
-- wire-version and server-limit negotiation;
-- SDAM topology tracking;
-- server selection and active read-preference routing;
-- heartbeat monitoring and failover;
-- sessions and transactions.
+Bongo still does **not** claim complete MongoDB-driver parity. Major remaining boundaries include full sharded/mongos support, load-balanced mode, complete public/causal session semantics, full transaction-body retry, client-certificate mTLS/X.509 transport, wire compression, and the broader typed BSON ergonomics work.
 
-Those are not hidden limitations. The public docs should continue to distinguish an implemented configuration model from behavior that depends on future topology infrastructure.
+The [roadmap](ROADMAP.md) tracks those boundaries explicitly.
