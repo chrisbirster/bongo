@@ -5,34 +5,51 @@ on:
   pull_request:
 
 jobs:
-  tls:
+  tls-scram:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: ./scripts/ensure-mongo-fixture.sh tls
-      - run: zig build tls-integration-test
+      - name: Start TLS MongoDB fixture
+        run: bash ./scripts/start-tls-db.sh
+      - name: Test verified TLS + SCRAM
+        run: zig build tls-integration-test
+      - name: Stop TLS fixture
+        if: always()
+        run: docker rm -f mongodb-tls >/dev/null 2>&1 || true
 
-  transactions-and-cmap:
+  transactions-cmap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: ./scripts/ensure-mongo-fixture.sh replset
-      - run: zig build runtime-integration-test
-      - run: zig build cmap-integration-test
+      - name: Start replica-set MongoDB fixture
+        run: bash ./scripts/start-replica-db.sh
+      - name: Test sessions and transactions
+        run: zig build runtime-integration-test
+      - name: Test CMAP lifecycle
+        run: zig build cmap-integration-test
+      - name: Stop replica-set fixture
+        if: always()
+        run: docker rm -f mongodb-rs >/dev/null 2>&1 || true
 
-  sdam-and-retryability:
+  sdam:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: ./scripts/ensure-mongo-fixture.sh sdam
-      - run: zig build sdam-integration-test
-      - run: zig build retryability-integration-test
+      - name: Start three-member replica-set fixture
+        run: bash ./scripts/ensure-mongo-fixture.sh sdam
+      - name: Test discovery, selection, stress and failover
+        run: zig build sdam-integration-test
+      - name: Test retryable reads, writes, and commit handling
+        run: zig build retryability-integration-test
+      - name: Stop SDAM fixture
+        if: always()
+        run: docker rm -f mongodb-sdam >/dev/null 2>&1 || true
