@@ -2,6 +2,7 @@ const std = @import("std");
 const auth_transport = @import("auth_transport.zig");
 const bson = @import("../bson.zig");
 const command_response = @import("command_response.zig");
+const error_response = @import("error_response.zig");
 const Connection = @import("connection.zig").Connection;
 const find_options = @import("find_options.zig");
 const op_msg = @import("op_msg.zig");
@@ -28,6 +29,7 @@ pub const Error = error{
     UnexpectedResponse,
     InvalidCursorResponse,
     CommandFailed,
+    RetryableRead,
     UnsupportedAuthMechanism,
 };
 
@@ -98,6 +100,15 @@ pub const Runtime = struct {
         self.closing = true;
         for (self.pools.items) |server_pool| server_pool.pool.close();
         self.mutex.unlock(self.io);
+    }
+
+    pub fn clearForRetry(self: *Runtime) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.pools.items) |server_pool| {
+            server_pool.pool.clear() catch {};
+            server_pool.pool.ready() catch {};
+        }
     }
 
     pub fn find(
@@ -489,8 +500,11 @@ fn parseCursorResponse(
     const message = try op_msg.decode(response_bytes);
     if (message.header.response_to != expected_response_to) return error.UnexpectedResponse;
     const body = try message.body();
-    const ok = (try bson.Reader.get(body, "ok")) orelse return error.CommandFailed;
-    if (!commandSucceeded(ok)) return error.CommandFailed;
+    const status = try error_response.inspectBody(body);
+    if (!status.ok) {
+        if (status.retryableRead()) return error.RetryableRead;
+        return error.CommandFailed;
+    }
     const cursor_value = (try bson.Reader.get(body, "cursor")) orelse return error.InvalidCursorResponse;
     const cursor = switch (cursor_value) {
         .document => |value| value,

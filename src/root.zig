@@ -181,6 +181,7 @@ test {
     _ = @import("mongo/topology.zig");
     _ = @import("mongo/pool.zig");
     _ = @import("mongo/transaction.zig");
+    _ = @import("mongo/retryable_write.zig");
     _ = @import("mongo/runtime_client.zig");
     _ = @import("mongo/x509.zig");
     _ = @import("mongo/scram.zig");

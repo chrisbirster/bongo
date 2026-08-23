@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tls_dir="$root/.bongo-tls"
+MONGO_IMAGE="${MONGO_IMAGE:-mongo:8.0}"
 mkdir -p "$tls_dir"
 
 openssl req -x509 -newkey rsa:2048 -nodes \
@@ -25,7 +26,7 @@ docker run -d \
   -v "$tls_dir:/tls:ro" \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
   -e MONGO_INITDB_ROOT_PASSWORD=secretpassword \
-  mongo:latest \
+  "$MONGO_IMAGE" \
   --tlsMode requireTLS \
   --tlsCertificateKeyFile /tls/mongodb.pem \
   --tlsCAFile /tls/server-cert.pem \

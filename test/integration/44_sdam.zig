@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const bongo = @import("bongo");
 
 const ports = [_]u16{ 27021, 27022, 27023 };
+const seeds = "localhost:27021,localhost:27022,localhost:27023";
 
 test "44 - discovers replica set and routes secondary reads" {
     const allocator = std.testing.allocator;
@@ -13,7 +14,7 @@ test "44 - discovers replica set and routes secondary reads" {
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_sdam?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&localThresholdMS=15",
+        "mongodb://" ++ seeds ++ "/bongo_sdam?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000&localThresholdMS=15",
         .{},
     );
     defer client.deinit();
@@ -57,7 +58,7 @@ test "44 - shared RuntimeClient survives concurrent SDAM selection" {
     var client = try bongo.RuntimeClient.connectUri(
         std.testing.io,
         std.testing.allocator,
-        "mongodb://localhost:27021/bongo_sdam_stress?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
+        "mongodb://" ++ seeds ++ "/bongo_sdam_stress?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=5000",
         .{ .max_pool_size = 8 },
     );
     defer client.deinit();
@@ -127,7 +128,7 @@ test "44 - primary stepdown clears pool and reselects without recreating client"
     var client = try bongo.RuntimeClient.connectUri(
         io,
         allocator,
-        "mongodb://localhost:27021/bongo_sdam_failover?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=10000",
+        "mongodb://" ++ seeds ++ "/bongo_sdam_failover?replicaSet=rs0&heartbeatFrequencyMS=500&serverSelectionTimeoutMS=10000",
         .{ .max_pool_size = 4 },
     );
     defer client.deinit();

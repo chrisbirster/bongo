@@ -15,6 +15,7 @@ pub const Error = error{
     InvalidTransactionState,
     TransientTransactionError,
     UnknownTransactionCommitResult,
+    RetryableWrite,
 };
 
 const RequestKind = enum {
@@ -270,6 +271,7 @@ pub fn abort(
     };
     defer allocator.free(response);
     const status = try error_response.inspect(response, request_id);
+    if (status.retryableWrite()) return error.RetryableWrite;
     if (!status.ok) return error.CommandFailed;
     try session.markAborted();
 }

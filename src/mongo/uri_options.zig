@@ -1,4 +1,19 @@
 const std = @import("std");
+
+test "retryReads and retryWrites default true and parse explicitly" {
+    var defaults = try parse(std.testing.allocator, "mongodb://localhost/app");
+    defer defaults.deinit();
+    try std.testing.expect(defaults.retry_reads);
+    try std.testing.expect(defaults.retry_writes);
+
+    var disabled = try parse(
+        std.testing.allocator,
+        "mongodb://localhost/app?retryReads=false&retryWrites=false",
+    );
+    defer disabled.deinit();
+    try std.testing.expect(!disabled.retry_reads);
+    try std.testing.expect(!disabled.retry_writes);
+}
 const uri = @import("uri.zig");
 
 const Allocator = std.mem.Allocator;
@@ -75,6 +90,10 @@ pub const Options = struct {
     socket_timeout_ms: ?u32 = null,
     timeout_ms: ?u64 = null,
 
+    // Retryable reads and writes are enabled by default by the MongoDB driver specs.
+    retry_reads: bool = true,
+    retry_writes: bool = true,
+
     // CMAP connection-pool controls. A max_pool_size of zero means unlimited.
     min_pool_size: ?u32 = null,
     max_pool_size: ?u32 = null,
@@ -122,6 +141,8 @@ const Seen = struct {
     connect_timeout_ms: bool = false,
     socket_timeout_ms: bool = false,
     timeout_ms: bool = false,
+    retry_reads: bool = false,
+    retry_writes: bool = false,
     min_pool_size: bool = false,
     max_pool_size: bool = false,
     max_connecting: bool = false,
@@ -262,6 +283,12 @@ pub fn parse(allocator: Allocator, connection_string: []const u8) (Allocator.Err
         } else if (optionName(name, "timeoutMS")) {
             try markSeen(&seen.timeout_ms);
             result.timeout_ms = try parseU64Option(allocator, raw_option.value);
+        } else if (optionName(name, "retryReads")) {
+            try markSeen(&seen.retry_reads);
+            result.retry_reads = try parseBooleanOption(allocator, raw_option.value);
+        } else if (optionName(name, "retryWrites")) {
+            try markSeen(&seen.retry_writes);
+            result.retry_writes = try parseBooleanOption(allocator, raw_option.value);
         } else if (optionName(name, "minPoolSize")) {
             try markSeen(&seen.min_pool_size);
             result.min_pool_size = try parseU32Option(allocator, raw_option.value);

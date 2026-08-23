@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MONGO_IMAGE="${MONGO_IMAGE:-mongo:8.0}"
+
 docker rm -f mongodb-rs >/dev/null 2>&1 || true
 
 docker run -d \
   --name mongodb-rs \
   -p 27019:27017 \
-  mongo:latest \
+  "$MONGO_IMAGE" \
   --replSet rs0 \
   --bind_ip_all
 

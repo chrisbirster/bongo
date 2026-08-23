@@ -98,6 +98,21 @@ pub fn build(b: *std.Build) void {
     );
     sdam_integration_test_step.dependOn(&run_sdam_integration_tests.step);
 
+    const retryability_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/integration/45_retryability.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "bongo", .module = mod } },
+        }),
+    });
+    const run_retryability_integration_tests = b.addRunArtifact(retryability_integration_tests);
+    const retryability_integration_test_step = b.step(
+        "retryability-integration-test",
+        "Run retryable reads, writes, and transaction commit integration tests",
+    );
+    retryability_integration_test_step.dependOn(&run_retryability_integration_tests.step);
+
     const spec_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/spec.zig"),
@@ -109,6 +124,18 @@ pub fn build(b: *std.Build) void {
     const run_spec_tests = b.addRunArtifact(spec_tests);
     const spec_test_step = b.step("spec-test", "Run MongoDB specification harness tests");
     spec_test_step.dependOn(&run_spec_tests.step);
+
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "bongo", .module = mod } },
+        }),
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_test_step = b.step("fuzz-test", "Run deterministic malformed-wire stress tests");
+    fuzz_test_step.dependOn(&run_fuzz_tests.step);
 
     const deez_readiness_module = b.createModule(.{
         .root_source_file = b.path("src/deez_readiness.zig"),

@@ -97,7 +97,7 @@ fn encodeHandshake(
 ) ![]u8 {
     const driver = .{
         .name = "bongo",
-        .version = "0.5.0",
+        .version = "0.6.0",
     };
     const os = .{
         .@"type" = osType(),

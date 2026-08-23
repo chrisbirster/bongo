@@ -1,0 +1,39 @@
+name: Compatibility Matrix
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mongodb:
+    name: MongoDB ${{ matrix.mongodb }} / Linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mongodb: ["7.0", "8.0"]
+    env:
+      MONGO_IMAGE: mongo:${{ matrix.mongodb }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Run full Bongo suite
+        run: make test
+      - name: Clean MongoDB fixtures
+        if: always()
+        run: ./scripts/ensure-mongo-fixture.sh clean || true
+
+  macos:
+    name: macOS / Zig 0.16
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test
+      - run: zig build spec-test
+      - run: zig build fuzz-test
+      - run: zig build deez-readiness-test
