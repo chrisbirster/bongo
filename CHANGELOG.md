@@ -2,6 +2,52 @@
 
 Bongo follows semantic versioning while the project is pre-1.0. Minor releases (`0.x.0`) represent coherent driver capability milestones; patch releases (`0.x.y`) are reserved for compatible fixes within a released milestone.
 
+## 0.6.0 — 2026-08-23
+
+Bongo 0.6.0 is the replica-set reliability and conformance milestone. It adds bounded retry semantics, strengthens error and shutdown behavior, starts executing pinned official MongoDB retry fixtures, adds deterministic malformed-wire stress coverage, and turns platform/server validation into a repeatable compatibility matrix.
+
+### Added
+
+- `retryReads` and `retryWrites` URI/runtime options, enabled by default when the deployment supports them.
+- One retry for the initial `find` command after retryable server or transport failures. Cursor `getMore` remains deliberately non-retryable.
+- Replica-set retryable writes for `insertOne`, `updateOne`, `deleteOne`, and `findOneAndUpdate`.
+- Stable `(lsid, txnNumber)` reuse across retryable write attempts so MongoDB can provide at-most-once write semantics.
+- Transaction commit retry for `UnknownTransactionCommitResult`, with majority write concern on the retry.
+- Richer retryable read/write, error-label, write-error, and write-concern classification.
+- Pinned official MongoDB retryable-read and retryable-write fixtures in the spec harness.
+- Live `failCommand` integration tests for retryable reads, retryable writes, and transaction commit handling.
+- Secondary-read cursor shutdown/ownership stress coverage.
+- Deterministic malformed BSON and OP_MSG mutation/truncation tests.
+- A compatibility CI matrix that runs the full Linux suite against MongoDB 7.0 and 8.0 plus automated macOS Zig 0.16 unit/spec/fuzz/Deez-readiness validation.
+- Retryability and malformed-wire gates in the normal `make test` sequence.
+
+### Changed
+
+- Local/CI MongoDB fixtures now default to pinned `mongo:8.0` instead of `mongo:latest`; `MONGO_IMAGE` remains overridable for compatibility testing.
+- The normal Zig CI permanently runs unit, spec, fuzz, and Deez-readiness gates.
+- Live SDAM CI now also executes the retryability failpoint suite.
+- Package and handshake metadata now report Bongo `0.6.0`.
+
+### Validated release gates
+
+- macOS Apple Silicon with Homebrew Zig 0.16.0_1: full `make test` passed.
+- Linux/Fly Docker validation passed.
+- Deez passed both `zig build test --fork=../bongo` and `zig build mongo-integration-test --fork=../bongo` against the v0.6 candidate.
+- GitHub Actions Zig 0.16 and live MongoDB gates passed during candidate validation; final release-candidate CI additionally includes the MongoDB 7.0/8.0 and macOS compatibility matrix.
+
+### Current limitations
+
+- v0.6 remains a replica-set runtime milestone; complete sharded/mongos support (#64) and load-balanced mode (#65) remain future work.
+- Retryable writes are replica-set scoped and cover the four single-document write forms listed above; `getMore` is not retried.
+- Transaction commit retry is implemented, but remaining transaction convenience/body-retry behavior under #74/#75 is still incremental.
+- Complete public/server-session and causal-consistency behavior remains incomplete (#66-#69).
+- The specification harness now ingests a pinned retryable-read/write subset but does not claim full official fixture-corpus conformance; #96 remains incremental.
+- SDAM uses periodic hello polling and does not yet claim the complete upstream monitoring specification surface.
+- Zig 0.16 still does not expose the client-certificate/private-key TLS path needed for built-in mutual TLS and end-to-end `MONGODB-X509`.
+- SCRAM-SHA-256 password preparation still supports printable ASCII rather than complete SASLprep coverage.
+- Wire compression remains deferred; URI compressor options are parsed but `OP_COMPRESSED` is not enabled.
+- Typed BSON struct decoding and the broader BSON ergonomics roadmap remain future work.
+
 ## 0.5.0 — 2026-08-22
 
 Bongo 0.5.0 is the first production-oriented replica-set `RuntimeClient` milestone. It completes the CMAP behavior needed by topology changes, adds owned SDAM discovery and monitoring, routes writes and reads through replica-set server selection, and proves real primary stepdown/re-election without recreating the client.
